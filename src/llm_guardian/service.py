@@ -170,7 +170,10 @@ class ScanService:
         if cached is not None:
             return cached
         outcomes = self._pipeline.scan(segment.text, segment.provenance)
-        self._cache.put(key, outcomes)
+        # A scanner error is a fact about this run, not a feature of the content: caching it
+        # would replay a transient failure (and its fail-closed block) for the whole TTL.
+        if not any(outcome.error for outcome in outcomes):
+            self._cache.put(key, outcomes)
         return outcomes
 
     # -- conditional retrieval ----------------------------------------------------------------
