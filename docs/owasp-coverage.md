@@ -6,7 +6,7 @@ Generated from `owasp.coverage_table()`, the same source as `GET /v1/owasp`. `im
 | --- | --- | --- | --- | --- |
 | LLM01 | Prompt Injection | yes | guardian | `tests/scanners/test_rules.py`, `tests/scanners/test_deobfuscate.py`, `tests/scanners/test_invisible.py` |
 | LLM02 | Sensitive Information Disclosure | yes | guardian | `tests/scanners/test_secrets.py`, `tests/scanners/test_urls.py` |
-| LLM03 | Excessive Agency | yes | policy.py + gateway tool executor | `tests/test_policy.py` |
+| LLM03 | Excessive Agency | yes | policy.py + gateway tool executor | `tests/test_policy.py`, `tests/scanners/test_command.py` |
 | LLM04 | Supply Chain | no | build pipeline / gateway | - |
 | LLM05 | Data and Model Poisoning | no | gateway ingestion + incident review | `tests/test_incidents.py` |
 | LLM06 | Unbounded Consumption | yes | policy.py + gateway rate limiting | `tests/test_policy.py`, `tests/test_segments.py` |
