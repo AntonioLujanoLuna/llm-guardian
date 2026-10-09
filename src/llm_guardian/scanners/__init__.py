@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .agent_directive import AgentDirectiveScanner
 from .base import Scanner, build_finding, parse_severity, severity_rank
+from .command import CommandRiskScanner
 from .deobfuscate import DeobfuscatingScanner
 from .exfil import ExfilChannelScanner
 from .invisible import InvisibleTextScanner
@@ -17,6 +18,7 @@ __all__ = [
     "ML_DISABLED_WARNING",
     "PREPROCESSING_VERSION",
     "AgentDirectiveScanner",
+    "CommandRiskScanner",
     "DeobfuscatingScanner",
     "ExfilChannelScanner",
     "InvisibleTextScanner",

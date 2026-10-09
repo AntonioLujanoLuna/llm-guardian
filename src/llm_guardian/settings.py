@@ -48,6 +48,10 @@ class ScannerSettings(BaseModel):
         default=True,
         description="The source+movement+destination correlation scanner (see scanners/exfil.py).",
     )
+    enable_command: bool = Field(
+        default=True,
+        description="Dangerous shell-command shapes in tool calls (see scanners/command.py).",
+    )
     enable_agent_directive: bool = Field(
         default=True,
         description="Directives addressed to the model from untrusted channels (see "

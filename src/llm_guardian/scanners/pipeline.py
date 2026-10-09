@@ -16,6 +16,7 @@ from ..provenance import Provenance
 from ..settings import ScannerSettings
 from .agent_directive import AgentDirectiveScanner
 from .base import Scanner
+from .command import CommandRiskScanner
 from .deobfuscate import DeobfuscatingScanner
 from .exfil import ExfilChannelScanner
 from .invisible import InvisibleTextScanner
@@ -56,6 +57,8 @@ class ScannerPipeline:
             scanners.append(AgentDirectiveScanner())
         if settings.enable_exfil:
             scanners.append(ExfilChannelScanner())
+        if settings.enable_command:
+            scanners.append(CommandRiskScanner())
         if settings.enable_secrets:
             scanners.append(SecretScanner())
         if settings.enable_urls:
