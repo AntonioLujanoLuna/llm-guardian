@@ -7,6 +7,8 @@ integrate by overriding the dependencies instead of reimplementing the service.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+
 from fastapi import FastAPI
 
 from .settings import GuardianSettings
@@ -43,5 +45,17 @@ def create_app(settings: GuardianSettings | None = None) -> FastAPI:
     app.state.metrics = container.metrics
     app.state.verdict_engine = container.verdicts
     app.state.session_tracker = container.sessions
+    app.state.upstream_client = None
+    app.router.on_shutdown.append(_close_upstream(app))
     register(app)
     return app
+
+
+def _close_upstream(app: FastAPI) -> Callable[[], Awaitable[None]]:
+    async def close() -> None:
+        client = app.state.upstream_client
+        if client is not None:
+            await client.aclose()
+            app.state.upstream_client = None
+
+    return close
