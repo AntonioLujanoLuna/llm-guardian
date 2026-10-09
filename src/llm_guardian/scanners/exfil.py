@@ -21,11 +21,11 @@ import re
 from collections.abc import Sequence
 
 from ..models import Finding, OwaspCategory, Severity
-from ..provenance import Provenance
+from ..provenance import Provenance, TrustLevel, trust_of
 from .base import build_finding
-from .urls import is_untrusted_destination
+from .urls import PASTE_HOSTS, is_untrusted_destination
 
-VERSION = "exfil-1"
+VERSION = "exfil-2"
 
 #: Things whose movement out of the environment is the event, in English and Spanish.
 _SOURCE = re.compile(
@@ -33,7 +33,13 @@ _SOURCE = re.compile(
     r"\b\.ssh\b|authorized_keys|private\s+key|clave\s+privada|\bPEM\b|/etc/passwd|/etc/shadow|"
     r"credentials?|credenciales?|api[\s_-]?keys?|claves?\s+de\s+api|access\s+tokens?|"
     r"secrets?\b|secretos?\b|tenant\s+database\s+dump|volcado\s+de\s+(?:la\s+)?base|"
-    r"\.config\b|\.aws\b|\.kube\b|directorio\s+de\s+configuraci)",
+    r"\.config\b|\.aws\b|\.kube\b|directorio\s+de\s+configuraci|"
+    # what the agent holds: the conversation itself, and data about people
+    r"(?:contents?\s+of\s+)?(?:this|the)\s+(?:conversation|chat(?:\s+history)?|context\s+window)|"
+    r"chat\s+history|previous\s+messages|system\s+prompt|"
+    r"(?:customer|user|employee|patient|client)\s+(?:list|data|emails?|records|database|details)|"
+    r"\bPII\b|personal\s+data|datos\s+(?:personales|de\s+(?:clientes|usuarios))|"
+    r"(?:la|esta)\s+conversaci[o\u00f3]n|historial\s+del?\s+chat)",
     re.IGNORECASE,
 )
 
@@ -43,6 +49,7 @@ _TRANSFER = re.compile(
     r"\b(?:send|sends|sent|sending|upload|uploads|uploaded|uploading|post|posts|posted|posting|"
     r"exfiltrate|exfiltrating|forward|forwards|forwarded|transmit|transmits|leak|leaks|leaked|"
     r"publish|publishes|published|email|emails|emailed|dump|dumps|dumped|paste|pastes|pasted|"
+    r"append|appends|appended|attach|attaches|attached|exfil|"
     r"env[i\u00ed]a(?:lo|la|los|las)?|env[i\u00ed]as|enviar|enviado|s[u\u00fa]be(?:la|lo|las|los)?|"
     r"subir|subido|manda(?:lo|la)?|mandar|mandado|reenv[i\u00ed]a(?:lo|la)?|"
     r"reenviar|filtra(?:lo|la)?|filtrar|filtrado|exfiltra|exfiltrar|volcar|publica|publicar|"
@@ -64,6 +71,16 @@ _GENERIC_DESTINATION = re.compile(
 )
 
 _URL = re.compile(r"https?://[^\s)\]\"'<>]+", re.IGNORECASE)
+
+#: A file-drop or paste host named without a scheme ("upload it to transfer.sh").
+_BARE_DROP_HOST = re.compile(
+    r"(?<![\w./-])(?:" + "|".join(re.escape(host) for host in sorted(PASTE_HOSTS)) + r")\b",
+    re.IGNORECASE,
+)
+
+#: An email address. Only a destination for content that should be inert: "send the report to
+#: bob@corp.example" from the operator is an ordinary request.
+_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
 
 #: Rendering verbs and media nouns: content that becomes a fetched URL.
 _RENDER = re.compile(
@@ -105,10 +122,20 @@ class ExfilChannelScanner:
                 destination_kind = "untrusted_destination"
                 break
         if destination_span is None:
+            bare = _BARE_DROP_HOST.search(text)
+            if bare is not None:
+                destination_span = (bare.start(), bare.end())
+                destination_kind = "untrusted_destination"
+        if destination_span is None:
             generic = _GENERIC_DESTINATION.search(text)
             if generic is not None:
                 destination_span = (generic.start(), generic.end())
                 destination_kind = "declared_destination"
+        if destination_span is None and trust_of(provenance) is TrustLevel.UNTRUSTED_DATA:
+            email = _EMAIL.search(text)
+            if email is not None:
+                destination_span = (email.start(), email.end())
+                destination_kind = "email_address"
 
         transfer = _TRANSFER.search(text)
         if destination_span is not None and transfer is not None:

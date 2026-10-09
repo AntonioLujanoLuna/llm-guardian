@@ -35,7 +35,7 @@ _MD_LINK = re.compile(r"(?<!!)\[[^\]]*\]\(\s*(https?://[^)\s]+)")
 
 #: Destinations whose whole purpose is receiving or laundering data: pastebins, throwaway
 #: webhooks and file drops. Matching a host is a signal, not a block -- see the module docstring.
-_PASTE_HOSTS = frozenset(
+PASTE_HOSTS = _PASTE_HOSTS = frozenset(
     {
         "pastebin.com",
         "paste.ee",

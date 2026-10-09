@@ -298,10 +298,10 @@ class TestCorpusRegression:
         """A pattern change must invalidate the feature cache, so the versions are part of a key."""
         pipeline = ScannerPipeline.from_settings(SETTINGS)
         versions = pipeline.versions()
-        assert versions["rules"] == "rules-5"
+        assert versions["rules"] == "rules-6"
         assert versions["urls"] == "urls-2"
         assert versions["deobfuscate"] == "deobfuscate-2"
-        assert versions["exfil"] == "exfil-1"
+        assert versions["exfil"] == "exfil-2"
 
 
 class TestSystemPromptExtraction:

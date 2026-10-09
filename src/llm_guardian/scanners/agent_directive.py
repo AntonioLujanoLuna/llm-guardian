@@ -40,7 +40,7 @@ from ..models import Finding, OwaspCategory, Severity
 from ..provenance import Provenance, TrustLevel, trust_of
 from .base import build_finding
 
-VERSION = "agent-directive-1"
+VERSION = "agent-directive-2"
 
 #: Actions whose prescription in inert content is the event: they change state, move data out, or
 #: grant/remove access. Deliberately excludes ordinary engineering verbs (run, write, add, refactor,
@@ -129,6 +129,30 @@ _PERSONA_WITH_AUTHORITY = (
     r"|\b(?:never|do\s+not|don't)\s+step\s+out\s+of\s+character\b"
 )
 
+#: A claim that the agent's task has been replaced: the payload says the real instructions are
+#: elsewhere, that what came before was a test, or that it speaks for the operator.
+_TASK_HIJACK = (
+    r"\b(?:new|updated|revised|real|actual|true)\s+(?:instructions?|orders|directives?)\s+"
+    r"from\s+(?:the\s+)?(?:admin(?:istrator)?|system|developer|owner|operator|security\s+team)\b"
+    # "see the new instructions below" is how a runbook talks; "the *real* ones" is not.
+    r"|\b(?:real|actual|true)\s+(?:instructions?|orders|directives?)\s+(?:are\s+|follow\s+)?below\b"
+    r"|\bstop\s+(?:the\s+|your\s+)?current\s+task\b|\bstop\s+what\s+you(?:'re|\s+are)\s+doing\b"
+    r"|\beverything\s+(?:above|before|prior)\s+(?:was|is)\s+(?:a\s+test|fake|irrelevant|"
+    r"a\s+distraction|outdated|void)\b"
+    r"|\bnuevas?\s+instrucciones\s+del?\s+(?:administrador|sistema)\b"
+    r"|\bdet[e\u00e9]n\s+la\s+tarea\s+actual\b"
+)
+
+#: The payload addresses the agent by name inside a hidden carrier (an HTML comment): that is the
+#: injection itself. Visible notes to the model are the ``instruction_addressed_to_model`` rule's.
+_ADDRESSEE = r"(?:AI|A\.I\.|assistant|agent|LLM|chatbot|copilot|language\s+model)s?"
+_ADDRESSED_HIDDEN = (
+    r"<!--(?:(?!-->)[\s\S]){0,300}?(?:\b" + _ADDRESSEE + r"\b\s*[:,]"
+    r"|\b(?:note|message|instructions?)\s+(?:for|to)\s+(?:the\s+|any\s+|all\s+)?"
+    + _ADDRESSEE
+    + r"\b)"
+)
+
 _RULES: tuple[tuple[str, str, Severity, tuple[OwaspCategory, ...], str], ...] = (
     (
         "agent_directive",
@@ -164,6 +188,20 @@ _RULES: tuple[tuple[str, str, Severity, tuple[OwaspCategory, ...], str], ...] = 
         Severity.HIGH,
         (OwaspCategory.LLM01, OwaspCategory.LLM03),
         "Content that should be inert asks to be adopted as an instruction.",
+    ),
+    (
+        "agent_directive_task_hijack",
+        _TASK_HIJACK,
+        Severity.HIGH,
+        (OwaspCategory.LLM01,),
+        "Content that should be inert claims to replace the agent's task or instructions.",
+    ),
+    (
+        "agent_directive_hidden_address",
+        _ADDRESSED_HIDDEN,
+        Severity.HIGH,
+        (OwaspCategory.LLM01,),
+        "A hidden comment in content that should be inert is addressed to the AI agent.",
     ),
     (
         "agent_directive_persona_authority",

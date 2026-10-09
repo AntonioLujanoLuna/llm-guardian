@@ -171,7 +171,7 @@ class TestBehaviourandPersona:
 class TestWiring:
     def test_enabled_by_default_and_version_pinned(self) -> None:
         pipeline = ScannerPipeline.from_settings(ScannerSettings())
-        assert pipeline.versions()["agent_directive"] == "agent-directive-1"
+        assert pipeline.versions()["agent_directive"] == "agent-directive-2"
 
     def test_can_be_disabled(self) -> None:
         pipeline = ScannerPipeline.from_settings(ScannerSettings(enable_agent_directive=False))

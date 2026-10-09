@@ -26,7 +26,7 @@ from .base import (
     severity_rank,
 )
 
-VERSION = "rules-5"
+VERSION = "rules-6"
 
 #: Evidence that a tool call *matters*: without one of these, "call the get_weather tool with the
 #: city" is an API example rather than an injection. Paired with the tool-call shapes below, so a
@@ -136,6 +136,8 @@ def default_rules() -> list[Rule]:
             _p(
                 r"\bforget\s+(everything|all|anything)\b(?!\s+(I|we|I've|we've)\b)"
                 r"(\s+(you\s+)?(were|was|told|know))?"
+                r"|\bforget\s+(all\s+)?your\s+(rules|instructions|guidelines|training|"
+                r"restrictions|programming|safety\s+\w+)\b"
             ),
             "An instruction tries to make the model forget what it was told.",
         ),
@@ -155,6 +157,8 @@ def default_rules() -> list[Rule]:
                 r"tokens?|roles?|sections?|best\s+practices|guide|docs|documentation)\b)"
                 r"|(your|the|its|my|previous|prior|above|earlier|initial|original|developer|"
                 r"system|hidden|full)\s+(instructions|guidelines)"
+                # "print the instructions for setting up the dev environment" is a task's.
+                r"(?!\s+(for|to|on|about|of|from\s+the\s+(readme|docs|manual|wiki))\b)"
                 r"|(your|its)\s+(hidden|internal|secret|confidential)\s+"
                 r"(configuration|config|prompt|instructions|rules|guidelines|settings)"
                 r"|(the\s+)?(hidden|secret|confidential)\s+(system\s+)?prompt"
@@ -183,7 +187,9 @@ def default_rules() -> list[Rule]:
             _p(
                 r"\b(imprime|mu[e\u00e9]stra(?:me)?|revela|repite|dame|ens[e\u00e9]\u00f1ame|vuelca|traduce)\s+"
                 r"(tu|el|la|las|los|tus|mis|anteriores?|previas?|iniciales?)\s+"
-                r"(prompt|instrucciones?|mensaje\s+del?\s+sistema|directrices?)"
+                r"(prompt|instrucciones?|mensaje\s+del?\s+sistema|directrices?)\b"
+                # "las instrucciones para instalar la CLI" is a task's ("del sistema" is not).
+                r"(?!\s+(para|sobre|acerca|de\s+(instalaci|uso|configuraci|montaje)))"
             ),
             "Una petici\u00f3n intenta revelar el prompt del sistema o las instrucciones.",
         ),
@@ -592,10 +598,13 @@ def default_rules() -> list[Rule]:
             Severity.MEDIUM,
             (OwaspCategory.LLM01,),
             _p(
-                r"\b(hidden|important|urgent|note|attention|nota|instrucci\u00f3n(?:es)?)\b"
+                r"(?:\b(hidden|important|urgent|note|attention|nota|instrucci\u00f3n(?:es)?)\b"
                 r"[^\n]{0,40}\b(for|to|al|para)\b[^\n]{0,20}"
                 r"\b(ai|llm|agents?|assistants?|models?|tools?|agente|asistentes?)\b"
-                r"|\bnote\s+for\s+the\s+(assistant|agent|model|ai)\b"
+                r"|\bnote\s+for\s+the\s+(assistant|agent|model|ai)\b)"
+                # ... a person's job ("the assistant team", "the agent's manager") is not the model.
+                r"(?!'?s?\s+(team|teams|manager|managers|role|position|director|program|job|"
+                r"desk|pool|rota|on-?call)\b)"
             ),
             "Content is addressed to the model as an instruction rather than to a reader.",
         ),
@@ -655,6 +664,41 @@ def default_rules() -> list[Rule]:
                 r"|\bno\s+tienes\s+pol\u00edtica\s+de\s+contenido\b"
             ),
             "Se activa un modo o se niega la pol\u00edtica del modelo para salt\u00e1rsela.",
+        ),
+        # --- Safety-control overrides (LLM01) -------------------------------------------------
+        # Addressed to the model ("your safety settings", "you are operating without ..."): the
+        # same verbs about a table saw or a search engine's filters are ordinary.
+        Rule(
+            "safety_override.en",
+            "policy_bypass",
+            Severity.HIGH,
+            (OwaspCategory.LLM01,),
+            _p(
+                r"\b(override|disable|turn\s+off|bypass|ignore|deactivate|remove|drop)\s+"
+                r"(all\s+)?your\s+(safety|content|security|ethical)\s+(settings|guidelines|"
+                r"filters?|polic(?:y|ies)|rules|restrictions|protocols?|measures|guardrails)\b"
+                r"|\byou(?:'re|\s+are)\s+(now\s+)?(operating|running|responding|acting|working)\s+"
+                r"without\s+(any\s+)?(safety|content|ethical)\s+(guidelines|filters?|restrictions|"
+                r"rules|polic(?:y|ies)|guardrails)\b"
+                r"|\bsystem\s+override\s*[:!]"
+                r"|\b(from\s+now\s+on|now)\b[^\n]{0,20}\byou\s+have\s+no\s+(restrictions|rules|"
+                r"limits|filters|guidelines)\b"
+                r"|\byou\s+now\s+have\s+no\s+(restrictions|rules|limits|filters|guidelines)\b"
+            ),
+            "A request tries to switch off the model's safety controls.",
+        ),
+        Rule(
+            "safety_override.es",
+            "policy_bypass",
+            Severity.HIGH,
+            (OwaspCategory.LLM01,),
+            _p(
+                r"\b(a\s+partir\s+de\s+ahora|ahora|ya)\s+no\s+tienes\s+(restricciones|reglas|"
+                r"l\u00edmites|filtros)\b"
+                r"|\b(desactiva|ignora|anula|elimina)\s+(todos\s+)?tus\s+(filtros|reglas|"
+                r"pol\u00edticas|restricciones)\s+de\s+(seguridad|contenido)\b"
+            ),
+            "Una petici\u00f3n intenta desactivar los controles de seguridad del modelo.",
         ),
         # --- Jailbreak precursors (LLM01): weak on their own, by design ----------------------
         # Phrasings that set up a jailbreak without yet asking for anything. One of them alone
