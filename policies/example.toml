@@ -79,10 +79,13 @@ egress_hosts = ["example.internal"]
 [tenants.platform]
 principals = ["dev-console", "ci-agent"]
 allowed_cross_tenant_reads = []
+allowed_cross_tenant_writes = []
 
 [tenants.analytics]
 principals = ["dev-console"]
+# A read grant is not a write grant: these are separate keys and separate checks.
 allowed_cross_tenant_reads = ["dev-console"]
+allowed_cross_tenant_writes = []
 
 # =================================================================================================
 # Tool argument schemas
@@ -93,7 +96,15 @@ allowed_cross_tenant_reads = ["dev-console"]
 #   path_within  -- the value must resolve inside this root (relative paths are joined first)
 #   host_allow   -- the value must be one of these hosts/domains (a recipient may be `user@domain`)
 #   pattern      -- the whole value must match this regular expression
+#   deny_pattern -- the value must NOT contain a match for this expression (a sensitive token in an
+#                   otherwise valid value: an allow-listed binary pointed at a private key). This is
+#                   a shape rule and not a sandbox -- it sees the argument, never what the program
+#                   does at run time, which is why capabilities and egress are checked separately.
 #   max_len      -- the value must not be longer than this
+#
+# Cross-tenant access is granted per direction: `allowed_cross_tenant_reads` covers a retrieval,
+# `allowed_cross_tenant_writes` a tool call that writes into the named tenant. A tenant that lets a
+# principal read has not thereby let it write.
 # =================================================================================================
 
 [tools.read_file]
@@ -134,6 +145,7 @@ allowed = ["cmd"]
 required = ["cmd"]
 [tools.run_shell.constraints.cmd]
 pattern = '^(pytest|python3?|git|ls|cat|make|ruff|mypy|pip|npm|node)\b[^;&|`$()\n]*$'
+deny_pattern = '(?i)(/\.ssh/|id_rsa|id_ed25519|\.pem\b|\.env\b|/etc/(passwd|shadow)|\benviron\b|AWS_(SECRET|ACCESS_KEY)|PRIVATE KEY|\.aws/|\.netrc|\.git-credentials)'
 max_len = 512
 
 [tools.query_db]

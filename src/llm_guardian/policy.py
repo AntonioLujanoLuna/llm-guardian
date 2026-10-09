@@ -40,6 +40,7 @@ ARGUMENT_SHELL_METACHAR = "argument_shell_metachar"
 ARGUMENT_HOST_NOT_ALLOWED = "argument_host_not_allowed"
 ARGUMENT_TOO_LONG = "argument_too_long"
 ARGUMENT_PATTERN = "argument_pattern"
+ARGUMENT_FORBIDDEN_PATTERN = "argument_forbidden_pattern"
 ARGUMENT_SCHEMA_MISSING = "argument_schema_missing"
 EVIDENCE_UNTRUSTED_INJECTION = "evidence_untrusted_injection"
 CAPABILITY_NOT_PERMITTED = "capability_not_permitted"
@@ -78,6 +79,7 @@ class ArgumentConstraint:
     path_within: str | None = None
     host_allow: tuple[str, ...] = ()
     pattern: str | None = None
+    deny_pattern: str | None = None
     max_len: int | None = None
     free_form: bool = False
 
@@ -292,13 +294,20 @@ class PolicyEngine:
     ) -> None:
         # A read is a retrieval; a write is a tool call. Both may name a target tenant, and both
         # must be denied unless the target tenant lists the principal with an explicit grant.
-        if request.action not in (PolicyAction.RETRIEVAL, PolicyAction.TOOL_CALL):
+        # The grants are SEPARATE on purpose: a tenant that invites a principal to read its data has
+        # not thereby invited it to write, and reusing one key for both directions let a read grant
+        # authorise a write.
+        if request.action is PolicyAction.RETRIEVAL:
+            grant_key = "allowed_cross_tenant_reads"
+        elif request.action is PolicyAction.TOOL_CALL:
+            grant_key = "allowed_cross_tenant_writes"
+        else:
             return
         target = request.target_tenant
         if target is None or target == request.tenant:
             return
         tenant = data.tenants.get(target, {})
-        grants = tenant.get("allowed_cross_tenant_reads", [])
+        grants = tenant.get(grant_key, [])
         if request.principal not in grants:
             reasons.append(CROSS_TENANT_DENIED)
 
@@ -389,6 +398,11 @@ def _constraint_failures(name: str, value: Any, constraint: ArgumentConstraint) 
         failures.append(f"{ARGUMENT_HOST_NOT_ALLOWED}:{name}")
     if constraint.pattern is not None and re.fullmatch(constraint.pattern, text) is None:
         failures.append(f"{ARGUMENT_PATTERN}:{name}")
+    # A shape rule, not a sandbox: it catches a sensitive token named in an otherwise valid value
+    # (an allow-listed binary pointed at a private key). It cannot see what a program does at run
+    # time, which is why the capability and egress checks still exist beside it.
+    if constraint.deny_pattern is not None and re.search(constraint.deny_pattern, text) is not None:
+        failures.append(f"{ARGUMENT_FORBIDDEN_PATTERN}:{name}")
     return failures
 
 
@@ -441,11 +455,13 @@ def _argument_constraint(body: Any) -> ArgumentConstraint:
     data = dict(body) if isinstance(body, dict) else {}
     max_len = data.get("max_len")
     pattern = data.get("pattern")
+    deny_pattern = data.get("deny_pattern")
     path_within = data.get("path_within")
     return ArgumentConstraint(
         path_within=str(path_within) if path_within is not None else None,
         host_allow=tuple(str(h) for h in _as_sequence(data.get("host_allow", []))),
         pattern=str(pattern) if pattern is not None else None,
+        deny_pattern=str(deny_pattern) if deny_pattern is not None else None,
         max_len=int(max_len) if max_len is not None else None,
     )
 
