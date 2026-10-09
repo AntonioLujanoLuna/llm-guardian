@@ -5,7 +5,10 @@
 # (gitignored) and point `GUARDIAN_POLICY__FILE` at it.
 #
 # Decision rule: an unknown principal, an unlisted tool, an unlisted egress host or a request
-# above its budget is denied when `policy.fail_closed` is true (the default).
+# above its budget is denied when `policy.fail_closed` is true (the default). A tool call whose
+# arguments violate the `[tools.<name>]` schema below is denied too, and a call whose arguments
+# came from untrusted data that carried an injection-class finding is denied (the confused-deputy
+# rule in `policy.py`).
 
 [defaults]
 # Applied to every principal unless it declares its own.
@@ -14,16 +17,226 @@ egress_hosts = []
 budgets = { tokens = 200000.0, concurrency = 4.0, requests_per_minute = 60.0 }
 
 [principals.dev-console]
-capabilities = ["read_repository", "write_file", "run_tests", "call_mcp"]
-egress_hosts = ["pypi.org", "github.com"]
+capabilities = [
+    "read_repository",
+    "read_file",
+    "search_files",
+    "write_file",
+    "run_tests",
+    "run_shell",
+    "query_db",
+    "post_message",
+    "send_mail",
+    "open_pr",
+    "deploy_staging",
+    "fetch_dependency",
+    "update_ticket",
+    "install_plugin",
+    "db_write",
+    "http_post",
+    "create_issue",
+    "call_mcp",
+]
+egress_hosts = [
+    "pypi.org",
+    "files.pythonhosted.org",
+    "registry.npmjs.org",
+    "github.com",
+    "example.internal",
+    "hooks.internal",
+]
 budgets = { tokens = 400000.0, concurrency = 8.0, requests_per_minute = 120.0 }
 
 [principals.ci-agent]
-capabilities = ["read_repository", "run_tests"]
-egress_hosts = ["pypi.org"]
+capabilities = [
+    "read_repository",
+    "read_file",
+    "search_files",
+    "run_tests",
+    "run_shell",
+    "open_pr",
+    "deploy_staging",
+    "fetch_dependency",
+]
+egress_hosts = ["pypi.org", "files.pythonhosted.org", "github.com"]
 
-# Optional per-tenant isolation. A retrieval whose `target_tenant` differs from the principal's
-# own tenant is denied unless it appears here with an explicit grant.
+[principals.support-agent]
+# A support agent that may read and answer, but holds no privileged tool: it cannot approve a
+# purchase order, install a plugin, write files, run a shell or touch the database.
+capabilities = [
+    "read_repository",
+    "read_file",
+    "search_files",
+    "query_db",
+    "post_message",
+    "send_mail",
+    "update_ticket",
+]
+egress_hosts = ["example.internal"]
+
+# Optional per-tenant isolation. A read (retrieval) or a write (tool call) whose `target_tenant`
+# differs from the principal's own tenant is denied unless it appears here with an explicit grant.
 [tenants.platform]
 principals = ["dev-console", "ci-agent"]
 allowed_cross_tenant_reads = []
+allowed_cross_tenant_writes = []
+
+[tenants.analytics]
+principals = ["dev-console"]
+# A read grant is not a write grant: these are separate keys and separate checks.
+allowed_cross_tenant_reads = ["dev-console"]
+allowed_cross_tenant_writes = []
+
+# =================================================================================================
+# Tool argument schemas
+#
+# `allowed` is the set of argument names a call may carry; `required` the ones it must; `free_form`
+# names values that may hold shell metacharacters (a query with a semicolon inside a string
+# literal). `[tools.<name>.constraints.<argument>]` holds per-argument rules:
+#   path_within  -- the value must resolve inside this root (relative paths are joined first)
+#   host_allow   -- the value must be one of these hosts/domains (a recipient may be `user@domain`)
+#   pattern      -- the whole value must match this regular expression
+#   deny_pattern -- the value must NOT contain a match for this expression (a sensitive token in an
+#                   otherwise valid value: an allow-listed binary pointed at a private key). This is
+#                   a shape rule and not a sandbox -- it sees the argument, never what the program
+#                   does at run time, which is why capabilities and egress are checked separately.
+#   max_len      -- the value must not be longer than this
+#
+# Cross-tenant access is granted per direction: `allowed_cross_tenant_reads` covers a retrieval,
+# `allowed_cross_tenant_writes` a tool call that writes into the named tenant. A tenant that lets a
+# principal read has not thereby let it write.
+# =================================================================================================
+
+[tools.read_file]
+allowed = ["path"]
+required = ["path"]
+[tools.read_file.constraints.path]
+path_within = "/workspace"
+max_len = 512
+
+[tools.write_file]
+allowed = ["path", "content"]
+required = ["path", "content"]
+free_form = ["content"]
+[tools.write_file.constraints.path]
+path_within = "/workspace"
+max_len = 512
+
+[tools.search_files]
+allowed = ["pattern", "path"]
+required = ["pattern"]
+free_form = ["pattern"]
+[tools.search_files.constraints.path]
+path_within = "/workspace"
+
+[tools.delete_files]
+allowed = ["path"]
+required = ["path"]
+[tools.delete_files.constraints.path]
+path_within = "/workspace"
+
+[tools.run_tests]
+allowed = ["suite", "flags"]
+required = []
+free_form = ["suite", "flags"]
+
+[tools.run_shell]
+allowed = ["cmd"]
+required = ["cmd"]
+[tools.run_shell.constraints.cmd]
+pattern = '^(pytest|python3?|git|ls|cat|make|ruff|mypy|pip|npm|node)\b[^;&|`$()\n]*$'
+deny_pattern = '(?i)(/\.ssh/|id_rsa|id_ed25519|\.pem\b|\.env\b|/etc/(passwd|shadow)|\benviron\b|AWS_(SECRET|ACCESS_KEY)|PRIVATE KEY|\.aws/|\.netrc|\.git-credentials)'
+max_len = 512
+
+[tools.query_db]
+allowed = ["sql"]
+required = ["sql"]
+free_form = ["sql"]
+[tools.query_db.constraints.sql]
+max_len = 4096
+
+[tools.db_write]
+allowed = ["table", "row"]
+required = ["table", "row"]
+free_form = ["row"]
+[tools.db_write.constraints.table]
+pattern = '^[a-z][a-z0-9_]{1,63}$'
+
+[tools.post_message]
+allowed = ["channel", "text"]
+required = ["channel", "text"]
+free_form = ["text"]
+[tools.post_message.constraints.channel]
+pattern = '^[a-z0-9][a-z0-9._-]{1,63}$'
+
+[tools.send_mail]
+allowed = ["to", "subject", "body"]
+required = ["to"]
+free_form = ["subject", "body"]
+[tools.send_mail.constraints.to]
+host_allow = ["example.internal"]
+
+[tools.http_post]
+allowed = ["host", "path", "body"]
+required = ["host"]
+free_form = ["path", "body"]
+[tools.http_post.constraints.host]
+host_allow = ["github.com", "hooks.internal", "example.internal"]
+
+[tools.open_pr]
+allowed = ["repo", "branch", "title"]
+required = ["repo", "branch", "title"]
+free_form = ["title"]
+[tools.open_pr.constraints.repo]
+pattern = '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$'
+[tools.open_pr.constraints.branch]
+pattern = '^[A-Za-z0-9._/-]+$'
+
+[tools.deploy_staging]
+allowed = ["service", "version"]
+required = ["service", "version"]
+[tools.deploy_staging.constraints.service]
+pattern = '^[a-z0-9][a-z0-9-]{1,63}$'
+[tools.deploy_staging.constraints.version]
+pattern = '^[A-Za-z0-9._-]{1,64}$'
+
+[tools.fetch_dependency]
+allowed = ["host", "package", "dest"]
+required = ["host", "package"]
+free_form = ["package"]
+[tools.fetch_dependency.constraints.host]
+host_allow = ["pypi.org", "files.pythonhosted.org", "registry.npmjs.org", "github.com"]
+[tools.fetch_dependency.constraints.dest]
+path_within = "/workspace"
+
+[tools.update_ticket]
+allowed = ["ticket", "status", "comment"]
+required = ["ticket"]
+free_form = ["comment"]
+[tools.update_ticket.constraints.ticket]
+pattern = '^[A-Z][A-Z0-9]*-[0-9]+$'
+[tools.update_ticket.constraints.status]
+pattern = '^(open|in_progress|in_review|done|closed)$'
+
+[tools.create_issue]
+allowed = ["project", "title", "assignee"]
+required = ["project", "title"]
+free_form = ["title"]
+[tools.create_issue.constraints.project]
+pattern = '^[A-Z][A-Z0-9]{1,9}$'
+[tools.create_issue.constraints.assignee]
+pattern = '^[a-z0-9][a-z0-9._-]{1,63}$'
+
+[tools.install_plugin]
+allowed = ["plugin", "scope"]
+required = ["plugin", "scope"]
+[tools.install_plugin.constraints.plugin]
+pattern = '^[a-z0-9][a-z0-9-]{1,63}$'
+[tools.install_plugin.constraints.scope]
+pattern = '^(self|team:[a-z0-9-]+)$'
+
+[tools.approve_po]
+allowed = ["po_id", "amount"]
+required = ["po_id"]
+[tools.approve_po.constraints.po_id]
+pattern = '^PO-[0-9]{4,10}$'
