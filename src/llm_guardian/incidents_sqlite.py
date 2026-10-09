@@ -7,6 +7,9 @@ read-modify-write of a fold, so the lock here only protects the connection itsel
 
 Timestamps are stored as ISO-8601 UTC strings, which sort lexicographically in time order, so the
 retention purge is a plain string comparison in SQL.
+
+The schema is versioned with ``PRAGMA user_version``; opening an older file migrates it in place
+(a new column is backfilled from the stored JSON), so an upgrade never strands a review queue.
 """
 
 from __future__ import annotations
@@ -16,10 +19,12 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .incidents import dedup_key
+from .incidents import IncidentFilter, dedup_key
 from .models import IncidentRecord, IncidentStatus
 
-_SCHEMA = """
+SCHEMA_VERSION = 2
+
+_SCHEMA_V1 = """
 CREATE TABLE IF NOT EXISTS incidents (
     case_id            TEXT PRIMARY KEY,
     dedup_key          TEXT NOT NULL,
@@ -41,6 +46,15 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 """
 
+#: v2: tenant and provenance become filterable columns, backfilled from the stored record.
+_MIGRATE_V2 = """
+ALTER TABLE incidents ADD COLUMN tenant TEXT;
+ALTER TABLE incidents ADD COLUMN provenance TEXT;
+UPDATE incidents SET tenant = json_extract(record, '$.tenant'),
+                     provenance = json_extract(record, '$.provenance');
+CREATE INDEX IF NOT EXISTS incidents_tenant ON incidents (tenant, created_at);
+"""
+
 
 class SqliteIncidentRepository:
     """Incident records and the audit trail in one SQLite file (``:memory:`` for tests)."""
@@ -52,7 +66,22 @@ class SqliteIncidentRepository:
         self._conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn.executescript(_SCHEMA)
+        self._migrate()
+
+    @property
+    def schema_version(self) -> int:
+        with self._lock:
+            return int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+
+    def _migrate(self) -> None:
+        version = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        if version < 1:
+            self._conn.executescript(_SCHEMA_V1)
+        if version < 2:
+            columns = {row[1] for row in self._conn.execute("PRAGMA table_info(incidents)")}
+            if "tenant" not in columns:
+                self._conn.executescript("BEGIN;" + _MIGRATE_V2 + "COMMIT;")
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         with self._lock:
@@ -77,9 +106,9 @@ class SqliteIncidentRepository:
     def put(self, record: IncidentRecord) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO incidents "
-                "(case_id, dedup_key, status, created_at, retention_deadline, record) "
-                "VALUES (?, ?, ?, ?, ?, ?) "
+                "INSERT INTO incidents (case_id, dedup_key, status, created_at, "
+                "retention_deadline, record, tenant, provenance) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(case_id) DO UPDATE SET status = excluded.status, "
                 "retention_deadline = excluded.retention_deadline, record = excluded.record",
                 (
@@ -89,19 +118,31 @@ class SqliteIncidentRepository:
                     _iso(record.created_at),
                     _iso(record.retention_deadline),
                     record.model_dump_json(),
+                    record.tenant,
+                    record.provenance.value,
                 ),
             )
 
-    def records(self, status: IncidentStatus | None = None) -> list[IncidentRecord]:
-        query = "SELECT record FROM incidents"
-        params: tuple[str, ...] = ()
-        if status is not None:
-            query += " WHERE status = ?"
-            params = (status.value,)
-        query += " ORDER BY created_at, case_id"
+    def records(
+        self,
+        where: IncidentFilter | None = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[IncidentRecord]:
+        clause, params = _where(where)
+        query = f"SELECT record FROM incidents{clause} ORDER BY created_at, case_id"
+        query += " LIMIT ? OFFSET ?"
+        params.extend([-1 if limit is None else limit, offset])
         with self._lock:
             rows = self._conn.execute(query, params).fetchall()
         return [IncidentRecord.model_validate_json(row[0]) for row in rows]
+
+    def count(self, where: IncidentFilter | None = None) -> int:
+        clause, params = _where(where)
+        with self._lock:
+            row = self._conn.execute(f"SELECT COUNT(*) FROM incidents{clause}", params).fetchone()
+        return int(row[0])
 
     def pending_count(self) -> int:
         with self._lock:
@@ -134,6 +175,23 @@ class SqliteIncidentRepository:
             {"case_id": c, "reviewer": r, "label": lb, "at": a, "note": n}
             for c, r, lb, a, n in rows
         ]
+
+
+def _where(where: IncidentFilter | None) -> tuple[str, list[str | int]]:
+    """A parameterised WHERE clause for a filter (column names are fixed, never input)."""
+    conditions: list[str] = []
+    params: list[str | int] = []
+    if where is not None:
+        if where.status is not None:
+            conditions.append("status = ?")
+            params.append(where.status.value)
+        if where.tenant is not None:
+            conditions.append("tenant = ?")
+            params.append(where.tenant)
+        if where.provenance is not None:
+            conditions.append("provenance = ?")
+            params.append(where.provenance.value)
+    return (" WHERE " + " AND ".join(conditions) if conditions else ""), params
 
 
 def _iso(moment: datetime) -> str:

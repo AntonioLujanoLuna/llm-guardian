@@ -204,3 +204,24 @@ def test_service_token_enforced(tmp_path: Path) -> None:
         assert authorised.status_code == 200
         # /metrics is not under /v1 and stays open.
         assert client.get("/metrics").status_code == 200
+
+
+def test_incident_listing_is_paged_and_filtered(client: TestClient) -> None:
+    for index, tenant in enumerate(["acme", "acme", "acme", "globex"]):
+        client.post(
+            "/v1/incidents",
+            json={
+                "provenance": "tool_result",
+                "content_digest": f"page-{index}",
+                "redacted_excerpt": "x",
+                "tenant": tenant,
+            },
+        )
+    page = client.get("/v1/incidents", params={"tenant": "acme", "limit": 2})
+    assert page.status_code == 200
+    assert len(page.json()) == 2
+    assert page.headers["x-total-count"] == "3"
+    rest = client.get("/v1/incidents", params={"tenant": "acme", "limit": 2, "offset": 2})
+    assert len(rest.json()) == 1
+    assert client.get("/v1/incidents", params={"limit": 0}).status_code == 422
+    assert client.get("/v1/incidents", params={"limit": 5000}).status_code == 422
