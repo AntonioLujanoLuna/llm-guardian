@@ -40,6 +40,7 @@ def test_selective_enable() -> None:
         enable_urls=False,
         enable_invisible_text=False,
         enable_deobfuscation=False,
+        enable_exfil=False,
     )
     pipeline = ScannerPipeline.from_settings(settings)
     assert set(pipeline.versions()) == {"rules"}

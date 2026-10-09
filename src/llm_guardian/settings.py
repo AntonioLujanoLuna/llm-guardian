@@ -44,6 +44,10 @@ class ScannerSettings(BaseModel):
     enable_urls: bool = True
     enable_invisible_text: bool = True
     enable_deobfuscation: bool = True
+    enable_exfil: bool = Field(
+        default=True,
+        description="The source+movement+destination correlation scanner (see scanners/exfil.py).",
+    )
     enable_ml: bool = Field(default=False, description="Optional local classifier; off by default.")
     ml_model_path: Path | None = None
     #: Weights per scanner when aggregating; unlisted scanners weigh 1.0.
