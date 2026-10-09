@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,12 @@ def test_scan_without_text(capsys: pytest.CaptureFixture[str]) -> None:
     assert "needs a text" in capsys.readouterr().err
 
 
-def test_bench_reports_missing_harness(capsys: pytest.CaptureFixture[str]) -> None:
+def test_bench_reports_missing_harness(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A build without the benchmark harness says so instead of crashing."""
+    # A ``None`` entry in sys.modules is what an absent module looks like to importlib.
+    monkeypatch.setitem(sys.modules, "llm_guardian.bench.harness", None)
     assert main(["bench", "--report"]) == 2
     assert "bench is unavailable" in capsys.readouterr().err
 
