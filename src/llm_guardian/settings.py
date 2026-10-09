@@ -157,6 +157,12 @@ class ProxySettings(BaseModel):
     #: Sent upstream as a bearer token. Unset: the client's own Authorization header is passed.
     upstream_api_key: SecretStr | None = None
     timeout_seconds: float = Field(default=120.0, gt=0.0)
+    #: Scan streamed answers with a hold-back buffer (see ``api/stream_guard.py``).
+    scan_streams: bool = True
+    #: New characters per checkpoint scan: the most text the client waits on.
+    stream_checkpoint_chars: int = Field(default=256, ge=16)
+    #: Text scanned at each checkpoint, reaching back past the unreleased part for context.
+    stream_window_chars: int = Field(default=1024, ge=64)
 
 
 class ServerSettings(BaseModel):

@@ -18,8 +18,10 @@ assistant turn, i.e. what is new since the model last spoke. Earlier turns were 
 were new (and assistant turns on the way out), and rescanning the whole history on every request
 would make one weak signal count once per request in the per-conversation risk.
 
-Streaming responses are passed through unscanned (``X-Guardian-Output: not_scanned``): the input
-is still scanned before anything is forwarded.
+Streaming responses are scanned incrementally by :class:`~.stream_guard.StreamGuard`
+(``X-Guardian-Output: scanned_incrementally``): events are held back until a checkpoint scan
+passes, so no unscanned text reaches the client, and an enforced block ends the stream with an
+OpenAI-shaped error event. ``proxy.scan_streams=false`` restores plain pass-through.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from starlette.concurrency import run_in_threadpool
 from ..deps import ScanServiceDep, SettingsDep, UpstreamClientDep
 from ..models import ScanRequest, ScanResponse, SegmentInput, VerdictDecision
 from ..provenance import Provenance
+from .stream_guard import StreamGuard
 
 router = APIRouter(tags=["proxy"])
 
@@ -105,16 +108,38 @@ async def chat_completions(
     elif "authorization" in request.headers:
         upstream_headers["authorization"] = request.headers["authorization"]
 
+    async def scan_output(segments: Sequence[SegmentInput]) -> ScanResponse:
+        return await run_in_threadpool(
+            service.scan,
+            ScanRequest(
+                request_id=turn_id,
+                conversation_id=conversation,
+                tenant=tenant,
+                segments=tuple(segments),
+            ),
+        )
+
     if body.get("stream"):
         upstream = await client.send(
             client.build_request("POST", "chat/completions", json=body, headers=upstream_headers),
             stream=True,
         )
-        headers["X-Guardian-Output"] = "not_scanned"
+        media_type = upstream.headers.get("content-type", "text/event-stream")
+        if upstream.status_code >= 400 or not settings.proxy.scan_streams:
+            headers["X-Guardian-Output"] = "not_scanned"
+            stream = upstream.aiter_raw()
+        else:
+            headers["X-Guardian-Output"] = "scanned_incrementally"
+            guard = StreamGuard(
+                scan_output,
+                checkpoint_chars=settings.proxy.stream_checkpoint_chars,
+                window_chars=settings.proxy.stream_window_chars,
+            )
+            stream = guard.run(upstream.aiter_raw())
         return StreamingResponse(
-            upstream.aiter_raw(),
+            stream,
             status_code=upstream.status_code,
-            media_type=upstream.headers.get("content-type", "text/event-stream"),
+            media_type=media_type,
             headers=headers,
             background=BackgroundTask(upstream.aclose),
         )
@@ -135,15 +160,7 @@ async def chat_completions(
 
     outbound = segments_from_choices(data.get("choices"))
     if outbound:
-        verdict = await run_in_threadpool(
-            service.scan,
-            ScanRequest(
-                request_id=turn_id,
-                conversation_id=conversation,
-                tenant=tenant,
-                segments=tuple(outbound),
-            ),
-        )
+        verdict = await scan_output(outbound)
         headers.update(_verdict_headers("Output", verdict))
         if _enforced_block(verdict):
             return _error(
