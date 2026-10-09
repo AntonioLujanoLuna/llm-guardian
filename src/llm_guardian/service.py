@@ -8,7 +8,9 @@ stage boundaries are enforced:
 * A truncated segment, a scanner error, a disabled classifier and an unreachable risk memory are
   all surfaced as warnings; degradation is audited, never a silent allow.
 * Every escalate or block auto-records a *pending* incident. A pending record is an observation,
-  not a label, and only a later human review can promote it.
+  not a label, and only a later human review can promote it. It keeps the segment with secrets
+  masked (``incidents.excerpt``), so that once reviewed it is a precedent an identical later
+  segment actually matches.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from .memory import RiskMemory, not_queried
 from .memory.base import MemoryBackendUnavailable
 from .metrics import Metrics
 from .models import (
+    MAX_EXCERPT_CHARS,
     GuardMode,
     IncidentCreateRequest,
     LatencyBreakdown,
@@ -39,13 +42,14 @@ from .models import (
     Signals,
     VerdictDecision,
 )
+from .redaction import redact_secrets
 from .scanners import PREPROCESSING_VERSION, ScannerPipeline
 from .segments import Segmenter
 from .settings import GuardianSettings
 from .verdicts import VerdictEngine, worst_decision
 
-#: Incident excerpts are built only from finding *messages*, which never carry secret material.
-_MAX_EXCERPT = 2000
+#: Finding summaries are built only from finding *messages*, which never carry secret material.
+_MAX_SUMMARY = 2000
 
 
 class ScanService:
@@ -224,6 +228,11 @@ class ScanService:
             return not_queried("risk_memory_unreachable"), 0.0
         return evidence, evidence.query_ms
 
+    def _excerpt(self, segment: Segment, verdict: SegmentVerdict) -> str:
+        if self._settings.incidents.excerpt == "findings":
+            return _findings_summary(verdict)
+        return redact_secrets(segment.text, segment.provenance, limit=MAX_EXCERPT_CHARS)
+
     # -- incidents ----------------------------------------------------------------------------
     def _record_incidents(
         self,
@@ -240,7 +249,8 @@ class ScanService:
                     tenant=request.tenant,
                     provenance=segment.provenance,
                     content_digest=segment.digest,
-                    redacted_excerpt=_excerpt(verdict),
+                    redacted_excerpt=self._excerpt(segment, verdict),
+                    findings_summary=_findings_summary(verdict),
                     owasp=_categories(verdict.signals),
                     detector_versions=self._pipeline.versions(),
                     score=verdict.score,
@@ -249,13 +259,13 @@ class ScanService:
             )
 
 
-def _excerpt(verdict: SegmentVerdict) -> str:
+def _findings_summary(verdict: SegmentVerdict) -> str:
     parts = [
         f"{finding.kind} ({finding.severity.value}): {finding.message}"
         for finding in verdict.signals.top_findings
     ]
     text = "; ".join(parts) or f"decision={verdict.decision.value} score={verdict.score:.3f}"
-    return text[:_MAX_EXCERPT]
+    return text[:_MAX_SUMMARY]
 
 
 def _categories(signals: Signals) -> tuple[OwaspCategory, ...]:

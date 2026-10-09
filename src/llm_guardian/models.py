@@ -345,14 +345,24 @@ class Authorization(BaseModel):
     guardian_version: str
 
 
+#: The longest excerpt an incident keeps: one full default-sized segment.
+MAX_EXCERPT_CHARS = 4000
+
+
 class IncidentCreateRequest(BaseModel):
     conversation_id: str | None = None
     tenant: str | None = None
     provenance: Provenance
     content_digest: str
     redacted_excerpt: str = Field(
+        max_length=MAX_EXCERPT_CHARS,
+        description="The content with secrets masked (redacted by the caller, or by the guardian "
+        "for scan-recorded incidents). On review it becomes the precedent's text.",
+    )
+    findings_summary: str = Field(
+        default="",
         max_length=2000,
-        description="Redacted by the caller; the guardian stores pointers, not payloads.",
+        description="What the detectors reported, safe to log; never carries secret material.",
     )
     owasp: tuple[OwaspCategory, ...] = ()
     detector_versions: dict[str, str] = Field(default_factory=dict)
@@ -370,9 +380,14 @@ class IncidentRecord(BaseModel):
     provenance: Provenance
     content_digest: str
     redacted_excerpt: str
+    findings_summary: str = ""
     owasp: tuple[OwaspCategory, ...] = ()
     detector_versions: dict[str, str] = Field(default_factory=dict)
     score: float = 0.0
+    #: Sightings of the same (tenant, provenance, content digest). A repeat is folded into the
+    #: existing case instead of opening a new one, so a retry loop cannot flood the review queue.
+    occurrences: int = Field(default=1, ge=1)
+    last_seen_at: datetime | None = None
     status: IncidentStatus = IncidentStatus.PENDING
     family: str | None = None
     reviewed_by: str | None = None

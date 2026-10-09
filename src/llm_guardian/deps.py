@@ -17,7 +17,7 @@ from typing import Annotated, cast
 from fastapi import Depends, Request
 
 from .cache import FeatureCache
-from .incidents import IncidentStore
+from .incidents import IncidentRepository, IncidentStore
 from .memory import RiskMemory, build_risk_memory
 from .metrics import Metrics
 from .policy import PolicyEngine
@@ -55,7 +55,7 @@ def create_service(settings: GuardianSettings) -> ServiceContainer:
     pipeline = ScannerPipeline.from_settings(settings.scanners)
     cache = FeatureCache(settings.cache)
     memory = build_risk_memory(settings.memory)
-    incidents = IncidentStore(settings, memory, clock)
+    incidents = IncidentStore(settings, memory, clock, _incident_repository(settings))
     metrics = Metrics()
     verdicts = VerdictEngine(settings)
     policy = PolicyEngine(settings.policy)
@@ -70,6 +70,14 @@ def create_service(settings: GuardianSettings) -> ServiceContainer:
         metrics=metrics,
         verdicts=verdicts,
     )
+
+
+def _incident_repository(settings: GuardianSettings) -> IncidentRepository | None:
+    if settings.incidents.backend == "sqlite":
+        from .incidents_sqlite import SqliteIncidentRepository
+
+        return SqliteIncidentRepository(settings.incidents.sqlite_path)
+    return None
 
 
 # -- providers --------------------------------------------------------------------------------
