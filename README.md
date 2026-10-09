@@ -33,6 +33,7 @@ IDE / agent / MCP client
   POST /v1/scan  --> segments.py    incremental: new/changed segments only, overlapping chunks
                  --> cache.py      exact-content feature cache (features, never decisions)
                  --> scanners/     deobfuscation -> fast rules -> secrets / URLs / invisible text
+                 |                 -> agent directives / exfil pairs / shell commands (tool calls)
                  |                 -> optional local ML classifier
                  |                 + the seam between adjacent segments (split instructions)
                  --> aggregate.py  per-OWASP-category scores, scanner-error policy
@@ -81,7 +82,8 @@ src/llm_guardian/
   settings.py     every declared threshold, weight and policy
   segments.py     incremental segmentation and digests
   cache.py        exact-content feature cache
-  scanners/       rules, secrets, urls, invisible text, deobfuscation, optional ml
+  scanners/       rules, secrets, urls, invisible text, deobfuscation, agent directives,
+                  exfil pairs, shell commands in tool calls (command.py), optional ml
   aggregate.py    per-category scoring and scanner-error handling
   memory/         inmemory + elasticsearch risk memory, retrieval scoring
   verdicts.py     allow / escalate / block, shadow vs enforce
@@ -152,10 +154,22 @@ uv run llm-guardian export-training --out reviewed.jsonl   # reviewed cases only
 | `CHUNKING__SCAN_SEAMS` | `true` | Scan the join of adjacent same-provenance segments so a split instruction is seen. |
 | `MEMORY__REVIEWED_BENIGN_ALLOWS` | `false` | Exact-bytes reviewed-benign case lowers an escalate to allow (see invariants). |
 | `SESSION__ENABLED`, `__DECAY`, `__ESCALATE_AT` | `true`, `0.8`, `0.6` | Per-conversation risk; three consecutive low-signal turns escalate. Quoted/discussed matches do not count. |
-| `PROXY__UPSTREAM_URL`, `__UPSTREAM_API_KEY` | unset | Mount the OpenAI-compatible proxy. Roles map to provenance no higher than a user turn; streaming output is not scanned. |
+| `PROXY__UPSTREAM_URL`, `__UPSTREAM_API_KEY` | unset | Mount the OpenAI-compatible proxy. Roles map to provenance no higher than a user turn. |
+| `PROXY__SCAN_STREAMS`, `__STREAM_CHECKPOINT_CHARS`, `__STREAM_WINDOW_CHARS` | `true`, `256`, `1024` | Streamed answers are held back until a checkpoint scan passes; no unscanned text reaches the client, and an enforced block ends the stream with an error event. |
+| `PROXY__AUTHORIZE_TOOL_CALLS`, `__PRINCIPAL`, `__TRUST_PRINCIPAL_HEADER` | `false`, unset, `false` | Check every proposed tool call against the policy file as the configured principal, with the turn's input findings as evidence (confused-deputy rule). |
+| `SCANNERS__ENABLE_COMMAND` | `true` | Dangerous shell shapes in tool calls: credential-to-network, pipe-to-shell, reverse shell, destructive commands, persistence. |
 
 Repeat sightings of the same `(tenant, provenance, content)` fold into one incident
 (`occurrences`, `last_seen_at`), and incidents past their retention deadline are purged on write.
+`GET /v1/incidents` pages (`limit`, `offset`, `X-Total-Count`) and filters by `status`, `tenant`
+and `provenance`; the SQLite file is schema-versioned and migrates in place.
+
+`/v1/metrics` and `/metrics` count named events (`guardian_events_total{event=...}`): seam
+findings, session escalations, reviewed-precedent allows, refused mode overrides, and the proxy's
+input/output/stream blocks and tool-call denials. The Prometheus text has one HELP/TYPE per family.
+
+What the paraphrase sweeps found and changed (precision and recall on hand-written sets, with the
+caveats that implies): `docs/evaluations/paraphrase-sweep.md`.
 
 Gates: `ruff format --check .`, `ruff check .`, `mypy src/llm_guardian`,
 `pytest --cov=llm_guardian --cov-report=term` (coverage floor 85). CI runs them on 3.12 and 3.13.
