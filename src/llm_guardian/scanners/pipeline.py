@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from ..models import ScannerOutcome
 from ..provenance import Provenance
 from ..settings import ScannerSettings
+from .agent_directive import AgentDirectiveScanner
 from .base import Scanner
 from .deobfuscate import DeobfuscatingScanner
 from .exfil import ExfilChannelScanner
@@ -51,6 +52,8 @@ class ScannerPipeline:
             scanners.append(DeobfuscatingScanner(rules, settings.deobfuscation_max_depth))
         if settings.enable_rules:
             scanners.append(rules)
+        if settings.enable_agent_directive:
+            scanners.append(AgentDirectiveScanner())
         if settings.enable_exfil:
             scanners.append(ExfilChannelScanner())
         if settings.enable_secrets:
