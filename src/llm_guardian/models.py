@@ -485,6 +485,11 @@ class MetricsReport(BaseModel):
     escalations: int = 0
     retrieval_queries: int = 0
     scanner_errors: int = 0
+    events: dict[str, int] = Field(
+        default_factory=dict,
+        description="Counts of named guardian events (seam findings, session escalations, "
+        "reviewed-precedent allows, refused mode overrides, proxy blocks and denials).",
+    )
     cache: CacheStats
 
 

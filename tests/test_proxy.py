@@ -335,7 +335,9 @@ def leaking_stream() -> bytes:
 
 
 def test_stream_leak_is_cut_before_it_reaches_the_client() -> None:
-    response = stream_chat(make(streaming_upstream(leaking_stream())))
+    client = make(streaming_upstream(leaking_stream()))
+    response = stream_chat(client)
+    assert client.get("/v1/metrics").json()["events"]["proxy_stream_blocked"] == 1
     assert response.status_code == 200
     body = response.text
     assert "evil.example" not in body
@@ -490,9 +492,12 @@ def test_permitted_tool_call_is_released(tmp_path) -> None:
 
 
 def test_tool_outside_the_principals_scope_is_denied(tmp_path) -> None:
-    response = policy_proxy(calls_reply(("run_tests", {}), ("write_file", {})), tmp_path).post(
+    client = policy_proxy(calls_reply(("run_tests", {}), ("write_file", {})), tmp_path)
+    response = client.post(
         "/openai/v1/chat/completions", json=chat([{"role": "user", "content": "fix it"}])
     )
+    metrics = client.get("/v1/metrics").json()
+    assert metrics["events"]["proxy_tool_call_denied"] == 1
     assert response.status_code == 403
     error = response.json()["error"]
     assert error["code"] == "tool_call_denied"

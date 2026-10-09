@@ -38,7 +38,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from ..deps import ClockDep, PolicyEngineDep, ScanServiceDep, SettingsDep, UpstreamClientDep
+from ..deps import (
+    ClockDep,
+    MetricsDep,
+    PolicyEngineDep,
+    ScanServiceDep,
+    SettingsDep,
+    UpstreamClientDep,
+)
 from ..models import (
     EvidenceRef,
     PolicyAction,
@@ -74,6 +81,7 @@ async def chat_completions(
     client: UpstreamClientDep,
     engine: PolicyEngineDep,
     clock: ClockDep,
+    metrics: MetricsDep,
     x_guardian_conversation: Annotated[str | None, Header()] = None,
     x_guardian_tenant: Annotated[str | None, Header()] = None,
     x_guardian_principal: Annotated[str | None, Header()] = None,
@@ -111,6 +119,7 @@ async def chat_completions(
         )
         headers.update(_verdict_headers("Input", verdict))
         if _enforced_block(verdict):
+            metrics.count_event("proxy_input_blocked")
             return _error(
                 403,
                 "guardian_blocked",
@@ -162,6 +171,7 @@ async def chat_completions(
                 checkpoint_chars=settings.proxy.stream_checkpoint_chars,
                 window_chars=settings.proxy.stream_window_chars,
                 authorize=authorize if settings.proxy.authorize_tool_calls else None,
+                on_event=metrics.count_event,
             )
             stream = guard.run(upstream.aiter_raw())
         return StreamingResponse(
@@ -191,6 +201,7 @@ async def chat_completions(
         verdict = await scan_output(outbound)
         headers.update(_verdict_headers("Output", verdict))
         if _enforced_block(verdict):
+            metrics.count_event("proxy_output_blocked")
             return _error(
                 403,
                 "guardian_blocked",
@@ -205,6 +216,7 @@ async def chat_completions(
                 "allow" if denied is None else f"deny:{denied.denied_by}"
             )
             if denied is not None and not verdict.shadow:
+                metrics.count_event("proxy_tool_call_denied")
                 return _error(
                     403, "guardian_blocked", _denial_message(denied), "tool_call_denied", headers
                 )
