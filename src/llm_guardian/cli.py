@@ -27,21 +27,26 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--file", default=None)
     scan.add_argument("--provenance", default="user", choices=_PROVENANCE_CHOICES)
 
-    bench = sub.add_parser("bench", help="run the synthetic evaluation corpus")
-    bench.add_argument("--report", action="store_true", help="print the metric report")
-    bench.add_argument("--url", default=None, help="drive a running service instead of in-process")
+    # Every bench option belongs to the harness's own parser; they are forwarded untouched.
+    sub.add_parser(
+        "bench", help="run the synthetic evaluation corpus (see `llm-guardian bench --help`)"
+    )
 
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    parser = build_parser()
+    args, extra = parser.parse_known_args(raw)
+    if args.command == "bench":
+        return _bench(raw[raw.index("bench") + 1 :])
+    if extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
     if args.command == "serve":
         return _serve(args)
     if args.command == "scan":
         return _scan(args)
-    if args.command == "bench":
-        return _bench(args, argv)
     raise SystemExit(f"'{args.command}' is not implemented")
 
 
@@ -89,8 +94,8 @@ def _scan(args: argparse.Namespace) -> int:
     return 0
 
 
-def _bench(args: argparse.Namespace, argv: Sequence[str] | None) -> int:
-    """Delegate to the benchmark harness if this build ships one."""
+def _bench(forwarded: list[str]) -> int:
+    """Delegate to the benchmark harness (with the arguments after ``bench``), if shipped."""
     import importlib
 
     try:
@@ -109,5 +114,4 @@ def _bench(args: argparse.Namespace, argv: Sequence[str] | None) -> int:
             file=sys.stderr,
         )
         return 2
-    forwarded = list(argv) if argv is not None else sys.argv[1:]
     return int(run_cli(forwarded))

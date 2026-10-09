@@ -26,7 +26,7 @@ from .base import (
     severity_rank,
 )
 
-VERSION = "rules-3"
+VERSION = "rules-4"
 
 #: Evidence that a tool call *matters*: without one of these, "call the get_weather tool with the
 #: city" is an API example rather than an injection. Paired with the tool-call shapes below, so a
@@ -101,7 +101,8 @@ def default_rules() -> list[Rule]:
                 r"\b(ignore|disregard|forget|override)\s+"
                 r"(all\s+|any\s+|the\s+|your\s+)*"
                 r"(previous|prior|above|earlier|preceding|system)\s+"
-                r"(instruction|prompt|message|context|direction|rule|guideline)s?\b"
+                r"(instruction|prompt|message|context|direction|rule|guideline|directive|"
+                r"constraint|guidance)s?\b"
             ),
             "An instruction tries to override earlier or system instructions.",
         ),
@@ -147,6 +148,9 @@ def default_rules() -> list[Rule]:
                 r"initial\s+(?:prompt|instructions?)|developer\s+(?:message|instructions?))"
                 r"|(your|the|its|my|previous|prior|above|earlier|initial|original|developer|"
                 r"system|hidden|full)\s+(instructions|guidelines)"
+                r"|(your|its)\s+(hidden|internal|secret|confidential)\s+"
+                r"(configuration|config|prompt|instructions|rules|guidelines|settings)"
+                r"|(the\s+)?(hidden|secret|confidential)\s+(system\s+)?prompt"
                 r")\b"
             ),
             "A request tries to make the model reveal its system prompt or instructions.",
