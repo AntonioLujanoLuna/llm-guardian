@@ -289,6 +289,10 @@ class ScanResponse(BaseModel):
     warnings: tuple[str, ...] = ()
     scanner_versions: dict[str, str] = Field(default_factory=dict)
     guardian_version: str
+    session_risk: float | None = Field(
+        default=None,
+        description="Decayed risk accumulated across this conversation's requests, when tracked.",
+    )
 
     @property
     def blocked(self) -> bool:
