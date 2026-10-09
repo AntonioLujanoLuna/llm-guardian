@@ -43,7 +43,7 @@ class Segmenter:
     def segment(self, conversation_id: str | None, inputs: Sequence[SegmentInput]) -> list[Segment]:
         segments: list[Segment] = []
         index = 0
-        for item in inputs:
+        for source_index, item in enumerate(inputs):
             for chunk_text, start, end, truncated in self._chunks(item):
                 digest = digest_of(chunk_text)
                 segments.append(
@@ -57,6 +57,7 @@ class Segmenter:
                         char_start=start,
                         char_end=end,
                         truncated=truncated,
+                        source_index=source_index,
                     )
                 )
                 index += 1

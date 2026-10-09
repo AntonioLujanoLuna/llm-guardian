@@ -116,6 +116,9 @@ class Segment(BaseModel):
     char_start: int | None = None
     char_end: int | None = None
     truncated: bool = False
+    source_index: int = Field(
+        default=0, description="Which submitted input this chunk came from (seam detection)."
+    )
 
     @property
     def chars(self) -> int:

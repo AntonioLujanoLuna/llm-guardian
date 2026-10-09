@@ -76,6 +76,9 @@ class ChunkSettings(BaseModel):
     overlap_chars: int = Field(default=200, ge=0)
     #: Bounded inspection: a long segment contributes at most this many chunks per request.
     max_chunks_per_segment: int = Field(default=8, ge=1)
+    #: Also scan the join of adjacent submitted segments of the same provenance (the last and
+    #: first ``overlap_chars`` of each), so an instruction split across two segments is seen.
+    scan_seams: bool = True
 
 
 class MemorySettings(BaseModel):

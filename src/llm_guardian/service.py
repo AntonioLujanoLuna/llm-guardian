@@ -29,6 +29,7 @@ from .memory.base import MemoryBackendUnavailable
 from .metrics import Metrics
 from .models import (
     MAX_EXCERPT_CHARS,
+    Finding,
     GuardMode,
     IncidentCreateRequest,
     LatencyBreakdown,
@@ -42,14 +43,19 @@ from .models import (
     Signals,
     VerdictDecision,
 )
+from .provenance import Provenance
 from .redaction import redact_secrets
 from .scanners import PREPROCESSING_VERSION, ScannerPipeline
-from .segments import Segmenter
+from .scanners.base import severity_rank
+from .segments import Segmenter, digest_of
 from .settings import GuardianSettings
 from .verdicts import VerdictEngine, worst_decision
 
 #: Finding summaries are built only from finding *messages*, which never carry secret material.
 _MAX_SUMMARY = 2000
+
+#: The outcome name a cross-segment finding is reported under.
+SEAM_SCANNER = "seam"
 
 
 class ScanService:
@@ -178,23 +184,115 @@ class ScanService:
             if key_signature in seen:
                 results.append(seen[key_signature])
                 continue
-            outcomes = self._scan_one(segment)
+            outcomes = self._scan_text(segment.text, segment.digest, segment.provenance)
             ml_ms += _ml_ms(outcomes)
             seen[key_signature] = outcomes
             results.append(outcomes)
+
+        if self._settings.chunking.scan_seams and self._settings.chunking.overlap_chars > 0:
+            for position in range(1, len(segments)):
+                seam = self._scan_seam(
+                    segments[position - 1],
+                    segments[position],
+                    results[position - 1],
+                    results[position],
+                )
+                if seam is None:
+                    continue
+                ml_ms += seam.duration_ms if not seam.cached else 0.0
+                results[position] = (*results[position], seam)
+                if seam.findings:
+                    warnings.append(
+                        f"seam_finding:{segments[position - 1].index}-{segments[position].index}:"
+                        + ",".join(sorted({finding.kind for finding in seam.findings}))
+                    )
         return results, ml_ms
 
-    def _scan_one(self, segment: Segment) -> tuple[ScannerOutcome, ...]:
-        key = FeatureCache.make_key(
-            segment.digest,
-            segment.provenance,
-            self._fingerprint,
-            PREPROCESSING_VERSION,
+    def _scan_seam(
+        self,
+        before: Segment,
+        after: Segment,
+        before_outcomes: Sequence[ScannerOutcome],
+        after_outcomes: Sequence[ScannerOutcome],
+    ) -> ScannerOutcome | None:
+        """Scan the join of two adjacent submitted segments; keep only what neither side showed.
+
+        Chunks of one input already overlap, and a seam between different provenances would mix
+        trust levels, so only a boundary between two inputs of the same provenance is scanned.
+        The result is attached to the later segment -- the one that completes the instruction.
+        """
+        if before.source_index == after.source_index or before.provenance != after.provenance:
+            return None
+        window = self._settings.chunking.overlap_chars
+        tail, head = before.text[-window:], after.text[:window]
+        if not tail or not head:
+            return None
+        contiguous = before.char_end is not None and after.char_start == before.char_end
+        joins = [(tail + head, len(tail), len(tail))]
+        if not contiguous and not (tail[-1].isspace() or head[0].isspace()):
+            # Separate messages glued without a space would fuse the boundary words.
+            joins.append((f"{tail} {head}", len(tail), len(tail) + 1))
+
+        known: dict[str, int] = {}
+        for outcome in (*before_outcomes, *after_outcomes):
+            for finding in outcome.findings:
+                rank = severity_rank(finding.severity)
+                known[finding.kind] = max(known.get(finding.kind, -1), rank)
+
+        findings: dict[str, Finding] = {}
+        errors: list[str] = []
+        duration = 0.0
+        all_cached = True
+        for text, tail_end, head_start in joins:
+            for outcome in self._scan_text(text, digest_of(text), after.provenance):
+                duration += outcome.duration_ms
+                all_cached = all_cached and outcome.cached
+                if outcome.error:
+                    errors.append(f"{outcome.scanner}: {outcome.error}")
+                for finding in outcome.findings:
+                    rank = severity_rank(finding.severity)
+                    if rank <= known.get(finding.kind, -1):
+                        continue
+                    # A match wholly on one side was already judged there, with its full
+                    # context; the window would only lose that context and re-rate it. Keep a
+                    # spanned finding only when it straddles the boundary, and a spanless one
+                    # only when its kind is new to both sides.
+                    if finding.span is not None:
+                        start, end = finding.span
+                        if not (start < tail_end and end > head_start):
+                            continue
+                    elif finding.kind in known:
+                        continue
+                    current = findings.get(finding.kind)
+                    if current is None or rank > severity_rank(current.severity):
+                        findings[finding.kind] = finding.model_copy(
+                            update={
+                                "span": None,
+                                "attributes": {
+                                    **finding.attributes,
+                                    "seam_with": before.segment_id,
+                                },
+                            }
+                        )
+        if not findings and not errors:
+            return None
+        return ScannerOutcome(
+            scanner=SEAM_SCANNER,
+            scanner_version=self._fingerprint,
+            findings=tuple(findings.values()),
+            error="; ".join(errors) or None,
+            duration_ms=duration,
+            cached=all_cached,
         )
+
+    def _scan_text(
+        self, text: str, digest: str, provenance: Provenance
+    ) -> tuple[ScannerOutcome, ...]:
+        key = FeatureCache.make_key(digest, provenance, self._fingerprint, PREPROCESSING_VERSION)
         cached = self._cache.get(key)
         if cached is not None:
             return cached
-        outcomes = self._pipeline.scan(segment.text, segment.provenance)
+        outcomes = self._pipeline.scan(text, provenance)
         # A scanner error is a fact about this run, not a feature of the content: caching it
         # would replay a transient failure (and its fail-closed block) for the whole TTL.
         if not any(outcome.error for outcome in outcomes):
