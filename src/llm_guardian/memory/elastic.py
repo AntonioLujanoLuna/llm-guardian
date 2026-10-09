@@ -11,10 +11,12 @@ similarity is bounded to ``[0, 1)`` and is never presented as a probability of i
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import threading
 import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 from ..models import IncidentStatus, MemoryEvidence, MemoryStats, OwaspCategory
@@ -57,10 +59,12 @@ class ElasticsearchRiskMemory:
         *,
         client: Any = None,
         embedder: Callable[[str], Sequence[float]] | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._prefix = settings.es_index_prefix
         self._default_k = settings.retrieval_k
         self._embedder = embedder
+        self._clock = clock or _utcnow
         self.reachable = True
         self.degraded_reason: str | None = None
         self._lock = threading.Lock()
@@ -118,9 +122,16 @@ class ElasticsearchRiskMemory:
             "review_status": "verified",
             "detector_version": "guardian",
         }
+        if example.retention_deadline is not None:
+            document["retention_deadline"] = example.retention_deadline.isoformat()
         if self._embedder is not None:
             document["embedding"] = list(self._embedder(example.text))
+        other = self.benign_index if index == self.attacks_index else self.attacks_index
         with self._lock:
+            # A re-review supersedes the previous label for the same case id: best-effort delete
+            # of the opposite partition's document so a stale label is not returned alongside it.
+            with contextlib.suppress(Exception):
+                self._client.delete(index=other, id=example.case_id, ignore=[404])
             self._client.index(index=index, id=example.case_id, document=document)
 
     def query(
@@ -138,9 +149,17 @@ class ElasticsearchRiskMemory:
             self.reachable = False
             self.degraded_reason = f"{type(exc).__name__}: {exc}"
             raise
-        neighbors = [_hit_to_neighbor(hit) for hit in hits]
+        now = self._clock()
+        fresh: list[dict[str, Any]] = []
+        expired = 0
+        for hit in hits:
+            if _hit_expired(hit, now):
+                expired += 1
+                continue
+            fresh.append(hit)
+        neighbors = [_hit_to_neighbor(hit) for hit in fresh]
         query_ms = (time.perf_counter() - started) * 1000.0
-        return evidence_from(neighbors, k=size, query_ms=query_ms)
+        return evidence_from(neighbors, k=size, query_ms=query_ms, expired_examples=expired)
 
     def _search(self, text: str, size: int, tenant: str | None) -> list[dict[str, Any]]:
         filters: list[dict[str, Any]] = []
@@ -238,3 +257,20 @@ def _bounded_similarity(score: float, source: dict[str, Any]) -> float:
     if score <= 0.0:
         return 0.0
     return score / (score + 5.0)
+
+
+def _hit_expired(hit: dict[str, Any], now: datetime) -> bool:
+    """A hit whose stored retention deadline has passed must not be returned as evidence."""
+    source = hit.get("_source", {})
+    raw = source.get("retention_deadline")
+    if not raw:
+        return False
+    try:
+        deadline = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return False
+    return deadline <= now
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)

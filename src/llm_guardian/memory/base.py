@@ -8,6 +8,7 @@ similarity never whitelists content.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -38,6 +39,9 @@ class VerifiedExample(BaseModel):
     owasp: tuple[OwaspCategory, ...] = ()
     family: str | None = None
     tenant: str | None = None
+    #: Carried from the reviewed incident. ``None`` means the precedent never expires; a past
+    #: deadline means a query must drop it rather than keep applying a stale review.
+    retention_deadline: datetime | None = None
 
 
 class RiskMemory(Protocol):
@@ -97,6 +101,7 @@ def evidence_from(
     query_ms: float,
     reason_not_queried: str | None = None,
     queried: bool = True,
+    expired_examples: int = 0,
 ) -> MemoryEvidence:
     """Fold scored neighbours into a :class:`MemoryEvidence` using the design's formula."""
     attacks = [n.similarity for n in neighbors if n.label is IncidentStatus.CONFIRMED_ATTACK]
@@ -123,6 +128,7 @@ def evidence_from(
         margin=round(attack_sim - benign_sim, 6) if queried else None,
         neighbors=wire,
         query_ms=query_ms,
+        expired_examples=expired_examples,
     )
 
 

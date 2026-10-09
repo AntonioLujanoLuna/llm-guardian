@@ -2,7 +2,8 @@
 
 Passing ``--tool-boundary`` runs the tool-boundary policy measurement (``bench.policy_report``)
 instead of the detector harness, so both live behind the same entry point. The token is distinct
-from ``policy_report``'s own ``--policy <file>`` flag so the two do not collide.
+from ``policy_report``'s own ``--policy <file>`` flag so the two do not collide. ``--risk-memory``
+runs the risk-memory measurement (``bench.risk_memory``) instead.
 """
 
 from __future__ import annotations
@@ -17,6 +18,11 @@ def main(argv: list[str]) -> int:
         from .policy_report import main as policy_main
 
         return policy_main([arg for arg in argv if arg != "--tool-boundary"])
+
+    if "--risk-memory" in argv:
+        from .risk_memory import main as risk_memory_main
+
+        return risk_memory_main([arg for arg in argv if arg != "--risk-memory"])
 
     from .harness import main as harness_main
 

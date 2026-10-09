@@ -12,7 +12,8 @@ import math
 import re
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 
 from ..models import IncidentStatus, MemoryEvidence, MemoryStats
 from ..provenance import Provenance
@@ -51,8 +52,14 @@ class InMemoryRiskMemory:
     reachable = True
     degraded_reason: str | None = None
 
-    def __init__(self, settings: MemorySettings) -> None:
+    def __init__(
+        self,
+        settings: MemorySettings,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._default_k = settings.retrieval_k
+        self._clock = clock or _utcnow
         self._lock = threading.Lock()
         self._attacks: dict[str, tuple[VerifiedExample, frozenset[str]]] = {}
         self._benign: dict[str, tuple[VerifiedExample, frozenset[str]]] = {}
@@ -61,6 +68,11 @@ class InMemoryRiskMemory:
         assert_trusted_label(example.label)
         entry = (example, tokenise(example.text))
         with self._lock:
+            # A re-review supersedes the previous label for the same case: drop it from *both*
+            # partitions first, so a stale opposite label (a benign precedent later confirmed
+            # malicious, or vice versa) can never be retrieved alongside the current one.
+            self._attacks.pop(example.case_id, None)
+            self._benign.pop(example.case_id, None)
             target = (
                 self._attacks if example.label is IncidentStatus.CONFIRMED_ATTACK else self._benign
             )
@@ -75,11 +87,16 @@ class InMemoryRiskMemory:
     ) -> MemoryEvidence:
         started = time.perf_counter()
         tokens = tokenise(text)
+        now = self._clock()
         with self._lock:
             attacks = list(self._attacks.values())
             benign = list(self._benign.values())
         neighbors: list[Neighbor] = []
+        expired = 0
         for example, example_tokens in (*attacks, *benign):
+            if _has_expired(example, now):
+                expired += 1
+                continue
             if not _visible(example, tenant):
                 continue
             neighbors.append(
@@ -93,7 +110,9 @@ class InMemoryRiskMemory:
                 )
             )
         query_ms = (time.perf_counter() - started) * 1000.0
-        return evidence_from(neighbors, k=k or self._default_k, query_ms=query_ms)
+        return evidence_from(
+            neighbors, k=k or self._default_k, query_ms=query_ms, expired_examples=expired
+        )
 
     def stats(self) -> MemoryStats:
         with self._lock:
@@ -126,3 +145,13 @@ class InMemoryRiskMemory:
 def _visible(example: VerifiedExample, tenant: str | None) -> bool:
     """Global examples (no tenant) are visible to all; a tenant-scoped one only to its tenant."""
     return example.tenant is None or example.tenant == tenant
+
+
+def _has_expired(example: VerifiedExample, now: datetime) -> bool:
+    """A precedent whose retention deadline has passed must not be retrieved."""
+    deadline = example.retention_deadline
+    return deadline is not None and deadline <= now
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)

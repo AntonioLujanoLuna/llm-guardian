@@ -126,6 +126,7 @@ class IncidentStore:
                     owasp=updated.owasp,
                     family=updated.family,
                     tenant=updated.tenant,
+                    retention_deadline=updated.retention_deadline,
                 )
             )
         return updated
