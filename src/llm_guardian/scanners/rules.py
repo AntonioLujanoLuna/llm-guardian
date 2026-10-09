@@ -628,6 +628,38 @@ def default_rules() -> list[Rule]:
             ),
             "Se activa un modo o se niega la pol\u00edtica del modelo para salt\u00e1rsela.",
         ),
+        # --- Jailbreak precursors (LLM01): weak on their own, by design ----------------------
+        # Phrasings that set up a jailbreak without yet asking for anything. One of them alone
+        # is low severity and is allowed; the per-conversation tracker (session.py) is what
+        # notices a run of them building toward an attack across turns.
+        Rule(
+            "jailbreak_precursor.en",
+            "jailbreak_precursor",
+            Severity.LOW,
+            (OwaspCategory.LLM01,),
+            _p(
+                r"\byou\s+are\s+(now\s+)?in\s+(developer|debug|god|jailbreak|unrestricted)\s+mode\b"
+                r"|\b(pretend|imagine|act\s+as\s+if)\b[^\n]{0,20}\byou\s+(have|had)\s+no\s+"
+                r"(rules|restrictions|limits|guidelines|filters)\b"
+                r"|\bact\s+as\s+(an?\s+)?(unrestricted|unfiltered|uncensored)\b"
+                r"|\bhypothetical(ly)?\b[^\n]{0,60}\b(your|the)\s+(hidden|secret|system)\s+"
+                r"(instructions|prompt|rules)\b"
+                r"|\bstay\s+in\s+character\b[^\n]{0,40}\b(no\s+matter|whatever|regardless)\b"
+            ),
+            "A phrasing that sets up a jailbreak (a mode, a rule-free persona, a hypothetical).",
+        ),
+        Rule(
+            "jailbreak_precursor.es",
+            "jailbreak_precursor",
+            Severity.LOW,
+            (OwaspCategory.LLM01,),
+            _p(
+                r"\best\u00e1s\s+(ahora\s+)?en\s+modo\s+(desarrollador|dios|sin\s+restricciones)\b"
+                r"|\b(imagina|finge)\b[^\n]{0,20}\bque\s+no\s+tienes\s+"
+                r"(reglas|restricciones|l\u00edmites|filtros)\b"
+            ),
+            "Una frase que prepara un jailbreak (un modo, una personalidad sin reglas).",
+        ),
         # --- Credential phishing (LLM02, LLM03) ---------------------------------------------
         Rule(
             "credential_phishing.en",

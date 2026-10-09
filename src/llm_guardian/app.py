@@ -42,5 +42,6 @@ def create_app(settings: GuardianSettings | None = None) -> FastAPI:
     app.state.policy_engine = container.policy
     app.state.metrics = container.metrics
     app.state.verdict_engine = container.verdicts
+    app.state.session_tracker = container.sessions
     register(app)
     return app

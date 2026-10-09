@@ -118,6 +118,21 @@ class PolicySettings(BaseModel):
     )
 
 
+class SessionSettings(BaseModel):
+    """Cross-turn risk per conversation (see ``session.py``). Can escalate, never block."""
+
+    enabled: bool = True
+    #: Share of the previous risk carried into the next turn.
+    decay: float = Field(default=0.8, ge=0.0, lt=1.0)
+    #: A request contributes its worst score only from this level (``low`` is 0.25).
+    min_contribution: float = Field(default=0.2, ge=0.0, le=1.0)
+    #: Accumulated risk at which an otherwise-allowed request is escalated. With the defaults,
+    #: three consecutive ``low`` turns (0.25, 0.45, 0.61) reach it; scattered ones decay away.
+    escalate_at: float = Field(default=0.6, gt=0.0)
+    max_sessions: int = Field(default=50_000, ge=1)
+    idle_ttl_seconds: float = Field(default=3600.0, gt=0.0)
+
+
 class IncidentSettings(BaseModel):
     """Where incidents live, and what a scan-recorded incident keeps of the content."""
 
@@ -160,6 +175,7 @@ class GuardianSettings(BaseSettings):
     chunking: ChunkSettings = Field(default_factory=ChunkSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     incidents: IncidentSettings = Field(default_factory=IncidentSettings)
+    session: SessionSettings = Field(default_factory=SessionSettings)
     policy: PolicySettings = Field(default_factory=PolicySettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 

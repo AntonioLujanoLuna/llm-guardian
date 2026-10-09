@@ -23,6 +23,7 @@ from .metrics import Metrics
 from .policy import PolicyEngine
 from .scanners import ScannerPipeline
 from .service import ScanService
+from .session import SessionRiskTracker
 from .settings import GuardianSettings
 from .verdicts import VerdictEngine
 
@@ -47,6 +48,7 @@ class ServiceContainer:
     policy: PolicyEngine
     metrics: Metrics
     verdicts: VerdictEngine
+    sessions: SessionRiskTracker
 
 
 def create_service(settings: GuardianSettings) -> ServiceContainer:
@@ -69,6 +71,7 @@ def create_service(settings: GuardianSettings) -> ServiceContainer:
         policy=policy,
         metrics=metrics,
         verdicts=verdicts,
+        sessions=SessionRiskTracker(settings.session),
     )
 
 
@@ -117,6 +120,10 @@ def get_verdict_engine(request: Request) -> VerdictEngine:
     return cast(VerdictEngine, request.app.state.verdict_engine)
 
 
+def get_session_tracker(request: Request) -> SessionRiskTracker:
+    return cast(SessionRiskTracker, request.app.state.session_tracker)
+
+
 # -- Annotated aliases ------------------------------------------------------------------------
 SettingsDep = Annotated[GuardianSettings, Depends(get_settings)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
@@ -127,6 +134,7 @@ IncidentStoreDep = Annotated[IncidentStore, Depends(get_incident_store)]
 PolicyEngineDep = Annotated[PolicyEngine, Depends(get_policy_engine)]
 MetricsDep = Annotated[Metrics, Depends(get_metrics)]
 VerdictEngineDep = Annotated[VerdictEngine, Depends(get_verdict_engine)]
+SessionTrackerDep = Annotated[SessionRiskTracker, Depends(get_session_tracker)]
 
 
 def get_scan_service(
@@ -137,9 +145,10 @@ def get_scan_service(
     memory: RiskMemoryDep,
     incidents: IncidentStoreDep,
     metrics: MetricsDep,
+    sessions: SessionTrackerDep,
 ) -> ScanService:
     """Compose a scan service from the current providers, so overrides propagate."""
-    return ScanService(settings, clock, pipeline, cache, memory, incidents, metrics)
+    return ScanService(settings, clock, pipeline, cache, memory, incidents, metrics, sessions)
 
 
 ScanServiceDep = Annotated[ScanService, Depends(get_scan_service)]

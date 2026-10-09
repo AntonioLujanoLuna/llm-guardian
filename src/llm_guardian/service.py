@@ -48,6 +48,7 @@ from .redaction import redact_secrets
 from .scanners import PREPROCESSING_VERSION, ScannerPipeline
 from .scanners.base import severity_rank
 from .segments import Segmenter, digest_of
+from .session import SessionRiskTracker
 from .settings import GuardianSettings
 from .verdicts import VerdictEngine, worst_decision
 
@@ -56,6 +57,9 @@ _MAX_SUMMARY = 2000
 
 #: The outcome name a cross-segment finding is reported under.
 SEAM_SCANNER = "seam"
+
+#: Rule contexts (``scanners/rules.py``) that mark a match as talked about rather than issued.
+_DISCUSSION_CONTEXTS = frozenset({"quoted", "discussion", "quoted_discussion"})
 
 
 class ScanService:
@@ -70,6 +74,7 @@ class ScanService:
         memory: RiskMemory,
         incidents: IncidentStore,
         metrics: Metrics,
+        sessions: SessionRiskTracker | None = None,
     ) -> None:
         self._settings = settings
         self._clock = clock
@@ -78,6 +83,7 @@ class ScanService:
         self._memory = memory
         self._incidents = incidents
         self._metrics = metrics
+        self._sessions = sessions
         self._segmenter = Segmenter(settings.chunking)
         self._verdicts = VerdictEngine(settings)
         self._fingerprint = pipeline.fingerprint()
@@ -116,6 +122,7 @@ class ScanService:
                 )
             )
 
+        session_risk = self._apply_session_risk(request, verdicts)
         self._record_incidents(request, segments, verdicts)
 
         expired_examples = sum(
@@ -160,9 +167,63 @@ class ScanService:
             warnings=tuple(dict.fromkeys(warnings)),
             scanner_versions=self._pipeline.versions(),
             guardian_version=__version__,
+            session_risk=None if session_risk is None else round(session_risk, 4),
         )
         self._metrics.record_scan(response)
         return response
+
+    # -- cross-turn risk ------------------------------------------------------------------------
+    def _apply_session_risk(
+        self, request: ScanRequest, verdicts: list[SegmentVerdict]
+    ) -> float | None:
+        """Fold this request into its conversation's risk; escalate an allow that tips it over."""
+        if self._sessions is None or not self._sessions.settings.enabled:
+            return None
+        if request.conversation_id is None or not verdicts:
+            return None
+        effective = [self._session_contribution(v) for v in verdicts]
+        worst = max(range(len(verdicts)), key=lambda i: effective[i])
+        risk = self._sessions.observe(
+            request.tenant, request.conversation_id, effective[worst], request.request_id
+        )
+        threshold = self._sessions.settings.escalate_at
+        if (
+            risk >= threshold
+            and effective[worst] > 0.0
+            and worst_decision(verdicts) is VerdictDecision.ALLOW
+        ):
+            verdict = verdicts[worst]
+            verdicts[worst] = verdict.model_copy(
+                update={
+                    "decision": VerdictDecision.ESCALATE,
+                    "threshold": threshold,
+                    "notes": (*verdict.notes, f"session_risk_escalate:{risk:.3f}"),
+                }
+            )
+        return risk
+
+    def _session_contribution(self, verdict: SegmentVerdict) -> float:
+        """The part of a segment's score that is evidence against the conversation.
+
+        A segment a human reviewed as benign contributes nothing, and neither does a match the
+        rules judged to be quoted or discussed: a security team talking about prompt injection
+        produces exactly those, turn after turn, and must not accumulate into an escalation.
+        """
+        if any(note.startswith("reviewed_benign_precedent_allow") for note in verdict.notes):
+            return 0.0
+        kept = tuple(
+            outcome.model_copy(
+                update={
+                    "findings": tuple(
+                        f
+                        for f in outcome.findings
+                        if f.attributes.get("context") not in _DISCUSSION_CONTEXTS
+                    )
+                }
+            )
+            for outcome in verdict.scanners
+        )
+        return aggregate(kept, self._settings.scanners).score
 
     # -- mode -----------------------------------------------------------------------------------
     def _resolve_mode(self, requested: GuardMode | None, warnings: list[str]) -> GuardMode:
