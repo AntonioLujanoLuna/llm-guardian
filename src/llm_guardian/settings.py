@@ -163,6 +163,21 @@ class ProxySettings(BaseModel):
     stream_checkpoint_chars: int = Field(default=256, ge=16)
     #: Text scanned at each checkpoint, reaching back past the unreleased part for context.
     stream_window_chars: int = Field(default=1024, ge=64)
+    #: Authorize every tool call the model proposes against the policy file, as ``principal``,
+    #: with this turn's input findings as evidence (the confused-deputy rule applies).
+    authorize_tool_calls: bool = False
+    #: The principal proxied traffic acts as. Server configuration, not a client claim.
+    principal: str | None = None
+    #: Honour ``X-Guardian-Principal`` -- only behind a gateway that authenticates and sets it.
+    trust_principal_header: bool = False
+
+    @model_validator(mode="after")
+    def _principal_declared(self) -> ProxySettings:
+        if self.authorize_tool_calls and self.principal is None and not self.trust_principal_header:
+            raise ValueError(
+                "proxy.authorize_tool_calls needs proxy.principal (or trust_principal_header)"
+            )
+        return self
 
 
 class ServerSettings(BaseModel):

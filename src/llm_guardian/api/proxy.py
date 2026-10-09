@@ -29,7 +29,8 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, Request
@@ -37,8 +38,18 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from ..deps import ScanServiceDep, SettingsDep, UpstreamClientDep
-from ..models import ScanRequest, ScanResponse, SegmentInput, VerdictDecision
+from ..deps import ClockDep, PolicyEngineDep, ScanServiceDep, SettingsDep, UpstreamClientDep
+from ..models import (
+    EvidenceRef,
+    PolicyAction,
+    PolicyCheck,
+    PolicyCheckRequest,
+    ScanRequest,
+    ScanResponse,
+    SegmentInput,
+    VerdictDecision,
+)
+from ..policy import PolicyEngine
 from ..provenance import Provenance
 from .stream_guard import StreamGuard
 
@@ -61,8 +72,11 @@ async def chat_completions(
     service: ScanServiceDep,
     settings: SettingsDep,
     client: UpstreamClientDep,
+    engine: PolicyEngineDep,
+    clock: ClockDep,
     x_guardian_conversation: Annotated[str | None, Header()] = None,
     x_guardian_tenant: Annotated[str | None, Header()] = None,
+    x_guardian_principal: Annotated[str | None, Header()] = None,
 ) -> Response:
     """Scan, forward, scan the answer, return it -- or an OpenAI-shaped error on a block."""
     try:
@@ -78,6 +92,11 @@ async def chat_completions(
     # per-conversation risk counts it once instead of decaying through a second, clean "turn".
     turn_id = uuid.uuid4().hex
     headers: dict[str, str] = {"X-Guardian-Request-Id": turn_id}
+
+    principal = settings.proxy.principal
+    if settings.proxy.trust_principal_header and x_guardian_principal:
+        principal = x_guardian_principal
+    evidence: tuple[EvidenceRef, ...] = ()
 
     inbound = segments_from_messages(new_messages(body["messages"]))
     if inbound:
@@ -99,6 +118,14 @@ async def chat_completions(
                 "input_blocked",
                 headers,
             )
+        evidence = evidence_from(verdict)
+
+    def authorize_now(calls: Sequence[tuple[str, Any]]) -> PolicyCheck | None:
+        return first_denial(engine, principal or "", tenant, calls, evidence, clock)
+
+    async def authorize(calls: Sequence[tuple[str, Any]]) -> str | None:
+        denied = authorize_now(calls)
+        return None if denied is None else _denial_message(denied)
 
     upstream_headers = {"content-type": "application/json"}
     if settings.proxy.upstream_api_key is not None:
@@ -134,6 +161,7 @@ async def chat_completions(
                 scan_output,
                 checkpoint_chars=settings.proxy.stream_checkpoint_chars,
                 window_chars=settings.proxy.stream_window_chars,
+                authorize=authorize if settings.proxy.authorize_tool_calls else None,
             )
             stream = guard.run(upstream.aiter_raw())
         return StreamingResponse(
@@ -170,7 +198,98 @@ async def chat_completions(
                 "output_blocked",
                 headers,
             )
+        calls = tool_calls_from_choices(data.get("choices"))
+        if settings.proxy.authorize_tool_calls and calls:
+            denied = authorize_now(calls)
+            headers["X-Guardian-Tool-Policy"] = (
+                "allow" if denied is None else f"deny:{denied.denied_by}"
+            )
+            if denied is not None and not verdict.shadow:
+                return _error(
+                    403, "guardian_blocked", _denial_message(denied), "tool_call_denied", headers
+                )
     return JSONResponse(data, status_code=upstream.status_code, headers=headers)
+
+
+# -- tool-call authorization --------------------------------------------------------------------
+def evidence_from(verdict: ScanResponse) -> tuple[EvidenceRef, ...]:
+    """Every finding of this turn's input scan, as the evidence a tool proposal carries."""
+    refs: dict[tuple[str, str], EvidenceRef] = {}
+    for segment in verdict.segments:
+        for outcome in segment.scanners:
+            for finding in outcome.findings:
+                refs.setdefault(
+                    (segment.segment_id, finding.kind),
+                    EvidenceRef(
+                        segment_id=segment.segment_id,
+                        finding_kind=finding.kind,
+                        severity=finding.severity,
+                        provenance=segment.provenance,
+                    ),
+                )
+    return tuple(refs.values())
+
+
+def first_denial(
+    engine: PolicyEngine,
+    principal: str,
+    tenant: str | None,
+    calls: Sequence[tuple[str, Any]],
+    evidence: Sequence[EvidenceRef],
+    clock: Callable[[], datetime],
+) -> PolicyCheck | None:
+    """Authorize each proposed call; the first denial, or ``None`` when every call is allowed."""
+    for name, arguments in calls:
+        check = engine.check(
+            PolicyCheckRequest(
+                principal=principal,
+                tenant=tenant,
+                action=PolicyAction.TOOL_CALL,
+                tool=name or None,
+                tool_arguments=_as_arguments(arguments),
+                evidence=tuple(evidence),
+            ),
+            now=clock,
+        )
+        if not check.allowed:
+            return check.model_copy(update={"reason_codes": (f"tool:{name}", *check.reason_codes)})
+    return None
+
+
+def tool_calls_from_choices(choices: Any) -> list[tuple[str, Any]]:
+    calls: list[tuple[str, Any]] = []
+    if not isinstance(choices, list):
+        return calls
+    for choice in choices:
+        message = choice.get("message") if isinstance(choice, dict) else None
+        raw = message.get("tool_calls") if isinstance(message, dict) else None
+        for call in raw if isinstance(raw, list) else []:
+            function = call.get("function") if isinstance(call, dict) else None
+            if isinstance(function, dict):
+                calls.append((str(function.get("name", "")), _parsed(function.get("arguments"))))
+    return calls
+
+
+def _parsed(arguments: Any) -> Any:
+    if isinstance(arguments, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            return json.loads(arguments)
+    return arguments
+
+
+def _as_arguments(arguments: Any) -> dict[str, Any]:
+    """Policy argument checks need a mapping; anything else is checked as one opaque value."""
+    if isinstance(arguments, dict):
+        return arguments
+    if arguments in (None, ""):
+        return {}
+    return {"arguments": arguments}
+
+
+def _denial_message(check: PolicyCheck) -> str:
+    tool = next((code[5:] for code in check.reason_codes if code.startswith("tool:")), "")
+    detail = ", ".join(check.argument_failures or check.evidence_used) or check.denied_by or ""
+    return f"The proposed tool call {tool!r} was denied by policy: {detail}"
 
 
 # -- message mapping ----------------------------------------------------------------------------
@@ -223,10 +342,7 @@ def _tool_call_segments(message: dict[str, Any]) -> list[SegmentInput]:
             continue
         # Rendered as a JSON object -- the shape the rules recognise as structure, so the JSON
         # quoting around an argument is not mistaken for "the author is quoting an attack".
-        arguments: Any = function.get("arguments", "")
-        if isinstance(arguments, str):
-            with contextlib.suppress(json.JSONDecodeError):
-                arguments = json.loads(arguments)
+        arguments = _parsed(function.get("arguments", ""))
         text = json.dumps(
             {"name": function.get("name", ""), "arguments": arguments}, ensure_ascii=False
         )
