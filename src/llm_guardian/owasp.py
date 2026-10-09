@@ -60,10 +60,12 @@ def coverage_table() -> tuple[OwaspCategoryCoverage, ...]:
                 "hard policy checks for tool capabilities, egress hosts and budgets",
                 "cross-tenant retrieval requires an explicit grant",
                 "tool-call injection markers detected in data",
+                "dangerous command shapes in tool calls: credential-to-network, pipe-to-shell, "
+                "reverse shell, destructive commands, persistence",
             ),
             implemented=True,
             enforced_by="policy.py + gateway tool executor",
-            tests=("tests/test_policy.py",),
+            tests=("tests/test_policy.py", "tests/scanners/test_command.py"),
             notes="The guardian decides; the executor enforces at the point the tool runs.",
         ),
         OwaspCategoryCoverage(
