@@ -97,6 +97,13 @@ feature that carries the principal, the destination and the path, not a threshol
 embedding; until then, advisory is the correct state and the 0 is a property of the design rather
 than a tested claim about a working one.
 
+The one exception now available is deliberately *not* that threshold: with
+`memory.reviewed_benign_allows=true`, a human-reviewed benign case lowers an *escalate* to *allow*
+only for the identical bytes in the same tenant and provenance — never a block, never a tool call or
+tool result (see the update in `docs/evaluations/risk-memory.md`). It is the safe way to stop a
+reviewed false positive from re-escalating during the shadow period; similarity-based suppression
+stays off the table for the reason above.
+
 ## What enforcing still could not claim
 
 - **No real-traffic measurement.** Every number above is from a corpus in this repository. A shadow
