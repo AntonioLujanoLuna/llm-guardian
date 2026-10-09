@@ -67,6 +67,9 @@ async only: incident -> human security review -> verified label -> risk index ->
 | `GET` | `/v1/owasp` | Per-category implementation and test status. No invented aggregate score. |
 | `POST` | `/openai/v1/chat/completions` | Optional OpenAI-compatible proxy (when `proxy.upstream_url` is set): scan in, forward, scan out. |
 
+Out of process, `llm_guardian.client.GuardianClient` (and `AsyncGuardianClient`; `proxy` extra)
+wraps the same endpoints and returns the wire models, raising `GuardianError` on a non-2xx answer.
+
 All of them are reachable in-process from another FastAPI app through `Depends` — the providers in
 `deps.py` (`SettingsDep`, `ScannersDep`, `FeatureCacheDep`, `RiskMemoryDep`, `ClockDep`,
 `PolicyEngineDep`, `MetricsDep`, `ScannerPipelineDep`) are the intended integration point, so a
