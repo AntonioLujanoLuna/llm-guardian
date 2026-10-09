@@ -20,12 +20,16 @@ from ..models import Finding, OwaspCategory, Severity
 from ..provenance import Provenance
 from .base import Scanner, build_finding, severity_rank
 
-VERSION = "deobfuscate-1"
+VERSION = "deobfuscate-2"
 
 #: Base64 / hex runs that stand alone between non-alphabet characters.
 _B64 = re.compile(r"(?<![A-Za-z0-9+/=])([A-Za-z0-9+/]{16,}={0,2})(?![A-Za-z0-9+/=])")
 _HEX = re.compile(r"(?<![0-9A-Fa-f])((?:[0-9A-Fa-f]{2}){10,})(?![0-9A-Fa-f])")
 _PERCENT = re.compile(r"%[0-9A-Fa-f]{2}")
+
+#: Characters that render as nothing (or as a direction change) but sit inside the words a rule
+#: has to match: zero-width spaces and joiners, bidi overrides and isolates, word joiner, BOM.
+_INVISIBLE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u00ad]")
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,12 @@ class DeobfuscatingScanner:
             decoded_text = unquote(text)
             if decoded_text != text and _printable_ratio(decoded_text) >= 0.85:
                 out.append(_Decoded("percent", decoded_text, None))
+        if _INVISIBLE.search(text):
+            # The words are all there; the characters between them are not. Strip and re-run, so a
+            # smuggled instruction is seen the way the model would read it.
+            stripped = _INVISIBLE.sub("", text)
+            if stripped != text:
+                out.append(_Decoded("zero_width_strip", stripped, None, recurse=False))
         rot = codecs.encode(text, "rot13")
         if rot != text:
             out.append(_Decoded("rot13", rot, None, recurse=False))

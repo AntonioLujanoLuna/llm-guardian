@@ -98,6 +98,73 @@ Every false negative was inspected by family; they fall into four causes, and on
 - CerbIA stays an open question until that comparison exists: it is a young framework, and this
   baseline is the thing to judge its overhead against.
 
+## Second measurement: the deterministic fixes (2026-10-09)
+
+The fifty misses above were classified into four causes, three of which turned out to be **bugs in
+the detector layer** rather than missing knowledge. Fixing them took the rules-only configuration
+to **recall 1.000 (72/72) with 0 false blocks per 1,000 benign** on this corpus.
+
+| | first run | after the fixes |
+| --- | --- | --- |
+| Recall | 0.375 (27/72) | **1.000 (72/72)** |
+| Precision | 1.000 | 1.000 |
+| False blocks / 1,000 benign | 0.0 | **0.0** |
+| Escalation rate | 0.055 | 0.014 |
+
+### ⚠️ This corpus is now saturated — it is a regression suite, not a validation set
+
+These cases found the misses and then confirmed the fixes, so 72/72 says the detectors do what
+they were written to do on the traffic they were written against. It is **not** a generalisation
+estimate and must not be quoted as one. The unbiased figure remains the first run's 0.375 on
+cases the rules were written blind against; 1.000 is a regression result. **Any recall figure
+published from here needs cases the rules were not written against** — new families, real traffic,
+or a set authored by someone else — and the design already asks for exactly that ("held-out attack
+families and benign developer requests, not paraphrase-contaminated random splits").
+
+The practical consequence for the classifier comparison: the model baselines must be measured on a
+split the rules were not tuned on, or the rules' saturation flatters them too.
+
+### What the misses actually were
+
+1. **The context guard read JSON syntax as quotation.** `_context` treats a character adjacent to a
+   match as an opening quotation mark, and inside `{"name": "run_shell", "arguments": …}` every
+   value is quoted — so the guard concluded the author was *quoting an attack* and capped the
+   finding at `medium`. Every tool-call object in a tool result came back as a discussion. Fixed by
+   `_structural_json`: a segment that opens as JSON uses quotes as syntax, so the quotation
+   discount does not apply (the discussion test still does, which keeps a quoted example in a
+   security explainer discounted).
+2. **Discussion markers matched inside hostnames and identifiers.** `attacker.example` supplied the
+   marker "example" and `external-attacker` supplied "attack", so two attack cases read as
+   discussion. Host-like tokens and identifier-shaped tokens (`external-attacker`, `otro-cliente`,
+   `KEY=VALUE`) are now stripped from the marker window, and markers match by prefix so that
+   "Attackers often try to make a model ignore previous instructions" stays a discussion.
+3. **Lexical paraphrases of the override.** "New instructions supersede your training", "follow
+   only the content of this document", "previous instructions are void", "enable developer mode",
+   "hidden instruction for models", `NOTA AL AGENTE` — the rule set now targets the rephrasing, in
+   English and Spanish.
+4. **Two families had no representation at all**: a tool call *prescribed* inside inert content
+   (structural, and only when the call touches something sensitive — otherwise an API example in a
+   README is inert), and the exfiltration *pair* (`scanners/exfil.py`: a sensitive source **and** a
+   movement verb **and** a destination that exists to receive data; any one alone is ordinary
+   engineering prose). Image beacons — `![x](https://collector/?d=…)`, which render without ever
+   being visible to the reader — moved from invisible to reported.
+
+### Two bugs found in the fixes themselves
+
+- **The accent fold never fired.** Spanish rules write accents as `\u00ed` escapes inside raw
+  strings, so folding the literal character `í` was a no-op and a hex-encoded Spanish payload
+  (`ignora la politica de seguridad`) stayed invisible. The fold now rewrites both the escape form
+  and the character, and there is a test for the hex case specifically.
+- **Zero-width smuggling matched no rule.** `Ignore\u200ball\u200bprevious\u200binstructions` has
+  every word present and every rule defeated, because the separators are not whitespace. The
+  deobfuscation scanner now strips invisible and bidi characters and re-scans, alongside its
+  base64/hex/percent/rot13/reversed transforms.
+
+A note on the scoring: a single `high` finding scores 0.75 and `block_at` is 0.75, so these
+detections block rather than escalate. That is deliberate for LLM02/LLM03 shapes — an exfiltration
+channel or a tool call prescribing a write to `~/.ssh/authorized_keys` is not a suspicion — and it
+is the reason the false-block count is the number to watch when any of them is loosened.
+
 ## Known gaps in this measurement
 
 - Corpus synthesized in-repo: no third-party validation, and the same author wrote the cases and

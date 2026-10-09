@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .base import Scanner, build_finding, parse_severity, severity_rank
 from .deobfuscate import DeobfuscatingScanner
+from .exfil import ExfilChannelScanner
 from .invisible import InvisibleTextScanner
 from .ml import MlDependencyMissing, MlScanner, NullMlScanner, OnnxMlScanner
 from .pipeline import ML_DISABLED_WARNING, PREPROCESSING_VERSION, ScannerPipeline
@@ -15,6 +16,7 @@ __all__ = [
     "ML_DISABLED_WARNING",
     "PREPROCESSING_VERSION",
     "DeobfuscatingScanner",
+    "ExfilChannelScanner",
     "InvisibleTextScanner",
     "MlDependencyMissing",
     "MlScanner",

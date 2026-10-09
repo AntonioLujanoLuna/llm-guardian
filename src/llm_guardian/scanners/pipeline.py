@@ -16,6 +16,7 @@ from ..provenance import Provenance
 from ..settings import ScannerSettings
 from .base import Scanner
 from .deobfuscate import DeobfuscatingScanner
+from .exfil import ExfilChannelScanner
 from .invisible import InvisibleTextScanner
 from .ml import MlDependencyMissing, MlScanner, NullMlScanner, OnnxMlScanner
 from .rules import RuleScanner
@@ -50,6 +51,8 @@ class ScannerPipeline:
             scanners.append(DeobfuscatingScanner(rules, settings.deobfuscation_max_depth))
         if settings.enable_rules:
             scanners.append(rules)
+        if settings.enable_exfil:
+            scanners.append(ExfilChannelScanner())
         if settings.enable_secrets:
             scanners.append(SecretScanner())
         if settings.enable_urls:
