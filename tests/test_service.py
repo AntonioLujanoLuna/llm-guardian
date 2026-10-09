@@ -256,6 +256,45 @@ def test_scanner_error_fails_closed_for_high_impact() -> None:
     assert response.decision is VerdictDecision.BLOCK
 
 
+class FlakyScanner:
+    name = "flaky"
+    version = "flaky-1"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def scan(self, text, provenance):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("transient")
+        return []
+
+
+def test_scanner_error_is_not_cached() -> None:
+    settings = GuardianSettings(mode=GuardMode.ENFORCE)
+    container = create_service(settings)
+    flaky = FlakyScanner()
+    service = ScanService(
+        settings,
+        container.clock,
+        ScannerPipeline([flaky]),
+        container.cache,
+        container.memory,
+        container.incidents,
+        container.metrics,
+    )
+    first = scan(service, "hello", Provenance.TOOL_RESULT)
+    second = scan(service, "hello", Provenance.TOOL_RESULT)
+    # the transient failure fails closed once, then the scanner is re-run rather than replayed
+    assert first.decision is VerdictDecision.BLOCK
+    assert second.decision is VerdictDecision.ALLOW
+    assert second.segments[0].cached_features is False
+    assert flaky.calls == 2
+    # and a clean result is cached as usual
+    scan(service, "hello", Provenance.TOOL_RESULT)
+    assert flaky.calls == 2
+
+
 def test_scanner_error_block_policy() -> None:
     settings = GuardianSettings(
         mode=GuardMode.ENFORCE, scanners=ScannerSettings(error_policy=ScannerErrorPolicy.BLOCK)
