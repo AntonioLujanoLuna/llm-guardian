@@ -167,3 +167,21 @@ def test_worst_decision() -> None:
     assert worst_decision([allow, escalate]) is VerdictDecision.ESCALATE
     assert worst_decision([allow]) is VerdictDecision.ALLOW
     assert worst_decision([]) is VerdictDecision.ALLOW
+
+
+def test_benign_precedent_lowers_only_an_escalate() -> None:
+    from llm_guardian.aggregate import aggregate
+
+    engine = make_engine()
+    settings = engine._settings.scanners
+    segment = make_segment()
+
+    medium = [make_outcome(make_finding(severity=Severity.MEDIUM))]
+    lowered = engine.decide(segment, aggregate(medium, settings), medium, benign_precedent="c1")
+    assert lowered.decision is VerdictDecision.ALLOW
+    assert "reviewed_benign_precedent_allow:c1" in lowered.notes
+
+    high = [make_outcome(make_finding(severity=Severity.HIGH))]
+    kept = engine.decide(segment, aggregate(high, settings), high, benign_precedent="c1")
+    assert kept.decision is VerdictDecision.BLOCK
+    assert "reviewed_benign_precedent_not_applicable:c1" in kept.notes

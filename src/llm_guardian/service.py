@@ -43,7 +43,7 @@ from .models import (
     Signals,
     VerdictDecision,
 )
-from .provenance import Provenance
+from .provenance import Provenance, is_high_impact
 from .redaction import redact_secrets
 from .scanners import PREPROCESSING_VERSION, ScannerPipeline
 from .scanners.base import severity_rank
@@ -103,7 +103,18 @@ class ScanService:
             signals = aggregate(outcomes, self._settings.scanners)
             memory, lookup_ms = self._maybe_query(segment, signals, request.tenant, warnings)
             retrieval_ms += lookup_ms
-            verdicts.append(self._verdicts.decide(segment, signals, outcomes, memory, mode=mode))
+            verdicts.append(
+                self._verdicts.decide(
+                    segment,
+                    signals,
+                    outcomes,
+                    memory,
+                    mode=mode,
+                    benign_precedent=self._benign_precedent(
+                        segment, signals, outcomes, request.tenant
+                    ),
+                )
+            )
 
         self._record_incidents(request, segments, verdicts)
 
@@ -330,6 +341,26 @@ class ScanService:
         if self._settings.incidents.excerpt == "findings":
             return _findings_summary(verdict)
         return redact_secrets(segment.text, segment.provenance, limit=MAX_EXCERPT_CHARS)
+
+    def _benign_precedent(
+        self,
+        segment: Segment,
+        signals: Signals,
+        outcomes: Sequence[ScannerOutcome],
+        tenant: str | None,
+    ) -> str | None:
+        """The case id of a reviewed-benign exact match, looked up only where it could matter."""
+        if not self._settings.memory.reviewed_benign_allows:
+            return None
+        if any(outcome.scanner == SEAM_SCANNER for outcome in outcomes):
+            return None  # the review covered these bytes alone, not their join with a neighbour
+        thresholds = self._settings.thresholds
+        if not thresholds.escalate_at <= signals.score < thresholds.block_at:
+            return None
+        if segment.truncated or is_high_impact(segment.provenance):
+            return None
+        record = self._incidents.reviewed_benign(tenant, segment.provenance, segment.digest)
+        return None if record is None else record.case_id
 
     # -- incidents ----------------------------------------------------------------------------
     def _record_incidents(

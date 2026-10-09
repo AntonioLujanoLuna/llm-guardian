@@ -96,6 +96,11 @@ class MemorySettings(BaseModel):
     es_request_timeout_seconds: float = Field(default=2.0, gt=0.0)
     #: Advisory only: a review is a human decision and is never automated.
     auto_promote: bool = Field(default=False, frozen=True)
+    #: Opt-in: a human-reviewed *benign* case for the identical bytes, in the same tenant and
+    #: provenance, lowers an ``escalate`` to ``allow``. Never a block, never high-impact
+    #: provenance, never a truncated or errored scan -- and never on similarity: a near-identical
+    #: text can differ in exactly the way that matters (staging vs production).
+    reviewed_benign_allows: bool = False
 
 
 class PolicySettings(BaseModel):
