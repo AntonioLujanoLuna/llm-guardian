@@ -183,6 +183,23 @@ class MemoryEvidence(BaseModel):
     query_ms: float = 0.0
 
 
+class EvidenceRef(BaseModel):
+    """A finding echoed from a prior ``/v1/scan``, so the policy layer can see provenance.
+
+    A gateway that proposes an action reports *where the proposal came from*: the segment id, the
+    finding kind that was observed, its severity and the server-assigned provenance of the segment.
+    The policy layer never re-reads the text and never trusts a client-supplied role -- it only
+    compares these declared coordinates against its own rules.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    segment_id: str
+    finding_kind: str = Field(description="Stable scanner kind, e.g. 'tool_call_instruction'.")
+    severity: Severity
+    provenance: Provenance
+
+
 class PolicyCheck(BaseModel):
     """A hard policy decision. Computed from declared scopes, never from a model output."""
 
@@ -196,6 +213,18 @@ class PolicyCheck(BaseModel):
     )
     egress_hosts: tuple[str, ...] = ()
     budgets: dict[str, float] = Field(default_factory=dict)
+    denied_by: str | None = Field(
+        default=None,
+        description="The first reason that denied the request, or None when it was allowed.",
+    )
+    argument_failures: tuple[str, ...] = Field(
+        default=(),
+        description="Stable 'argument_*' codes (with the offending argument) from schema checks.",
+    )
+    evidence_used: tuple[str, ...] = Field(
+        default=(),
+        description="Finding kinds from the supplied evidence that drove a denial.",
+    )
     checked_at: datetime
 
 
@@ -273,16 +302,43 @@ class PolicyCheckRequest(BaseModel):
     action: PolicyAction
     tool: str | None = None
     arguments: dict[str, Any] = Field(default_factory=dict)
+    tool_arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Argument names/values of the proposed tool call, validated against the "
+        "tool schema declared in the policy file.",
+    )
+    evidence: tuple[EvidenceRef, ...] = Field(
+        default=(),
+        description="Findings from a prior scan that support this proposed action.",
+    )
     requested_capabilities: tuple[str, ...] = ()
     egress_hosts: tuple[str, ...] = ()
     requested_budget: dict[str, float] = Field(default_factory=dict)
     target_tenant: str | None = Field(
-        default=None, description="For a cross-tenant retrieval, which tenant is being read."
+        default=None, description="For a cross-tenant read or write, which tenant is targeted."
     )
 
 
 class PolicyCheckResponse(BaseModel):
     check: PolicyCheck
+    guardian_version: str
+
+
+class Authorization(BaseModel):
+    """The tool-boundary decision a tool executor receives from ``/v1/agent/authorize``.
+
+    It is the :class:`PolicyCheck` plus the detail the executor cares about at the point of
+    execution: the decision, the single code that denied it (if any), the argument-schema failures
+    and the finding kinds the evidence rule acted on.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    check: PolicyCheck
+    decision: VerdictDecision
+    denied_by: str | None = None
+    argument_failures: tuple[str, ...] = ()
+    evidence_used: tuple[str, ...] = ()
     guardian_version: str
 
 
