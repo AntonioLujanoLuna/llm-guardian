@@ -97,6 +97,12 @@ class ScanService:
 
         self._record_incidents(request, segments, verdicts)
 
+        expired_examples = sum(
+            verdict.memory.expired_examples for verdict in verdicts if verdict.memory is not None
+        )
+        if expired_examples:
+            warnings.append(f"risk_memory_expired_dropped:{expired_examples}")
+
         if any(segment.truncated for segment in segments):
             warnings.append(
                 "bounded_inspection: content was truncated by max_chunks_per_segment; "

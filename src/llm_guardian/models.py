@@ -181,6 +181,9 @@ class MemoryEvidence(BaseModel):
     margin: float | None = None
     neighbors: tuple[MemoryNeighbor, ...] = ()
     query_ms: float = 0.0
+    #: Reviewed precedents dropped because their retention deadline had passed. A stale benign
+    #: precedent is a false-negative risk, so the drop is counted and surfaced, never silent.
+    expired_examples: int = 0
 
 
 class EvidenceRef(BaseModel):
