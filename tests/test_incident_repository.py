@@ -191,3 +191,56 @@ def test_create_service_selects_sqlite_backend(tmp_path: Path) -> None:
     assert path.exists()
     again = create_service(settings)
     assert len(again.incidents.list()) == 1
+
+
+def test_filters_and_pagination(repo: IncidentRepository) -> None:
+    clock = Clock()
+    store, _ = make_store(repo, clock)
+    for index in range(5):
+        clock.now = T0 + timedelta(minutes=index)
+        store.create(request(f"a{index}", tenant="acme"))
+    clock.now = T0 + timedelta(minutes=10)
+    store.create(request("g1", tenant="globex"))
+    store.create(request("u1", tenant="acme", provenance=Provenance.USER))
+
+    assert store.count() == 7
+    assert store.count(tenant="acme") == 6
+    assert store.count(tenant="acme", provenance=Provenance.USER) == 1
+    page = store.list(tenant="acme", provenance=Provenance.TOOL_RESULT, limit=2, offset=1)
+    assert [r.content_digest for r in page] == ["a1", "a2"]
+    assert [r.content_digest for r in store.list(tenant="globex")] == ["g1"]
+    assert store.list(limit=3, offset=6)[0].content_digest in {"g1", "u1"}
+    assert store.list(offset=10) == []
+
+
+def test_sqlite_migrates_a_v1_file(tmp_path: Path) -> None:
+    import sqlite3
+
+    from llm_guardian.incidents_sqlite import _SCHEMA_V1, SCHEMA_VERSION
+
+    path = tmp_path / "old.db"
+    legacy = IncidentStore(GuardianSettings(), InMemoryRiskMemory(GuardianSettings().memory))
+    record = legacy.create(request("old", tenant="acme"))
+    conn = sqlite3.connect(path)
+    conn.executescript(_SCHEMA_V1)
+    conn.execute(
+        "INSERT INTO incidents VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            record.case_id,
+            "k",
+            record.status.value,
+            "2026-01-01T00:00:00.000000Z",
+            "2099-01-01T00:00:00.000000Z",
+            record.model_dump_json(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = SqliteIncidentRepository(path)
+    assert migrated.schema_version == SCHEMA_VERSION
+    store, _ = make_store(migrated, Clock())
+    assert [r.case_id for r in store.list(tenant="acme")] == [record.case_id]
+    assert store.count(provenance=Provenance.TOOL_RESULT) == 1
+    # reopening an up-to-date file is a no-op
+    assert SqliteIncidentRepository(path).schema_version == SCHEMA_VERSION

@@ -25,6 +25,7 @@ from __future__ import annotations
 import threading
 import uuid
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -49,6 +50,22 @@ def dedup_key(tenant: str | None, provenance: Provenance, content_digest: str) -
     return f"{tenant or ''}\x1f{provenance.value}\x1f{content_digest}"
 
 
+@dataclass(frozen=True)
+class IncidentFilter:
+    """Which incidents a listing returns. ``None`` on a field means "any"."""
+
+    status: IncidentStatus | None = None
+    tenant: str | None = None
+    provenance: Provenance | None = None
+
+    def matches(self, record: IncidentRecord) -> bool:
+        return (
+            (self.status is None or record.status is self.status)
+            and (self.tenant is None or record.tenant == self.tenant)
+            and (self.provenance is None or record.provenance is self.provenance)
+        )
+
+
 class IncidentRepository(Protocol):
     """Storage for incident records and the review audit trail. No lifecycle logic lives here."""
 
@@ -58,7 +75,17 @@ class IncidentRepository(Protocol):
 
     def put(self, record: IncidentRecord) -> None: ...
 
-    def records(self, status: IncidentStatus | None = None) -> list[IncidentRecord]: ...
+    def records(
+        self,
+        where: IncidentFilter | None = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[IncidentRecord]:
+        """Matching records, oldest first (the review queue's order)."""
+        ...
+
+    def count(self, where: IncidentFilter | None = None) -> int: ...
 
     def pending_count(self) -> int: ...
 
@@ -88,11 +115,24 @@ class InMemoryIncidentRepository:
         self._by_id[record.case_id] = record
         self._by_key[_key_of(record)] = record.case_id
 
-    def records(self, status: IncidentStatus | None = None) -> list[IncidentRecord]:
-        records = list(self._by_id.values())
-        if status is not None:
-            records = [record for record in records if record.status is status]
-        return sorted(records, key=lambda record: (record.created_at, record.case_id))
+    def records(
+        self,
+        where: IncidentFilter | None = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[IncidentRecord]:
+        where = where or IncidentFilter()
+        records = sorted(
+            (record for record in self._by_id.values() if where.matches(record)),
+            key=lambda record: (record.created_at, record.case_id),
+        )
+        end = None if limit is None else offset + limit
+        return records[offset:end]
+
+    def count(self, where: IncidentFilter | None = None) -> int:
+        where = where or IncidentFilter()
+        return sum(1 for record in self._by_id.values() if where.matches(record))
 
     def pending_count(self) -> int:
         return sum(1 for r in self._by_id.values() if r.status is IncidentStatus.PENDING)
@@ -175,9 +215,29 @@ class IncidentStore:
         with self._lock:
             return self._repo.get(case_id)
 
-    def list(self, status: IncidentStatus | None = None) -> list[IncidentRecord]:
+    def list(
+        self,
+        status: IncidentStatus | None = None,
+        *,
+        tenant: str | None = None,
+        provenance: Provenance | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[IncidentRecord]:
+        where = IncidentFilter(status=status, tenant=tenant, provenance=provenance)
         with self._lock:
-            return self._repo.records(status)
+            return self._repo.records(where, limit=limit, offset=offset)
+
+    def count(
+        self,
+        status: IncidentStatus | None = None,
+        *,
+        tenant: str | None = None,
+        provenance: Provenance | None = None,
+    ) -> int:
+        where = IncidentFilter(status=status, tenant=tenant, provenance=provenance)
+        with self._lock:
+            return self._repo.count(where)
 
     def pending_count(self) -> int:
         with self._lock:

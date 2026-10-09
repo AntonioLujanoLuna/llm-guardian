@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from typing import Annotated
+
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from ..deps import IncidentStoreDep
 from ..models import (
@@ -11,6 +13,7 @@ from ..models import (
     IncidentStatus,
     ReviewRequest,
 )
+from ..provenance import Provenance
 
 router = APIRouter(tags=["incidents"])
 
@@ -24,10 +27,18 @@ def create_incident(body: IncidentCreateRequest, store: IncidentStoreDep) -> Inc
 @router.get("/incidents", response_model=list[IncidentRecord])
 def list_incidents(
     store: IncidentStoreDep,
+    response: Response,
     status: IncidentStatus | None = None,
+    tenant: str | None = None,
+    provenance: Provenance | None = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[IncidentRecord]:
-    """List incidents, optionally filtered by status."""
-    return store.list(status)
+    """List incidents oldest first, filtered and paged; ``X-Total-Count`` has the full count."""
+    response.headers["X-Total-Count"] = str(
+        store.count(status, tenant=tenant, provenance=provenance)
+    )
+    return store.list(status, tenant=tenant, provenance=provenance, limit=limit, offset=offset)
 
 
 @router.post("/incidents/{case_id}/review", response_model=IncidentRecord)
