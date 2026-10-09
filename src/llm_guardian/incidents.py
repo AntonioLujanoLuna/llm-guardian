@@ -183,6 +183,18 @@ class IncidentStore:
         with self._lock:
             return self._repo.pending_count()
 
+    def reviewed_benign(
+        self, tenant: str | None, provenance: Provenance, content_digest: str
+    ) -> IncidentRecord | None:
+        """The still-retained case a human reviewed as benign for exactly these bytes, if any."""
+        with self._lock:
+            record = self._repo.find(dedup_key(tenant, provenance, content_digest))
+        if record is None or record.status is not IncidentStatus.BENIGN:
+            return None
+        if record.retention_deadline <= self._clock():
+            return None
+        return record
+
     def purge_expired(self) -> int:
         """Drop every case past its retention deadline; returns how many were dropped."""
         with self._lock:

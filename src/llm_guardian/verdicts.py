@@ -11,6 +11,9 @@ unexplained state. The hard boundaries from the design surface here:
 * A truncated segment can never *lower* a verdict.
 * Risk-memory evidence is advisory: cosine similarity never whitelists content, so it records a
   note and changes nothing.
+* The one exception is opt-in and is not similarity: a human-reviewed benign case for the
+  identical bytes (same tenant and provenance) may lower an *escalate* to *allow* -- never a
+  block, a high-impact segment, a truncated segment or a scan with a scanner error.
 
 Shadow vs enforce lives one level up, in the service: this engine always computes the real
 verdict, and the response marks it advisory when the mode is shadow.
@@ -71,13 +74,15 @@ class VerdictEngine:
         memory: MemoryEvidence | None = None,
         *,
         mode: GuardMode | None = None,
+        benign_precedent: str | None = None,
     ) -> SegmentVerdict:
         notes: list[str] = []
         threshold = self._block_at
 
         decision, threshold = self._apply_scores(signals, notes)
 
-        if self._floor_hit(outcomes):
+        floor_hit = self._floor_hit(outcomes)
+        if floor_hit:
             if decision is not VerdictDecision.BLOCK:
                 decision = VerdictDecision.BLOCK
                 threshold = self._block_at
@@ -95,6 +100,20 @@ class VerdictEngine:
                 notes.append("high_impact_truncated_fail_closed")
             else:
                 notes.append("truncated_segment_not_evidence_of_safety")
+
+        if benign_precedent is not None:
+            if (
+                decision is VerdictDecision.ESCALATE
+                and not floor_hit
+                and not segment.truncated
+                and not is_high_impact(segment.provenance)
+                and not any(outcome.error for outcome in outcomes)
+            ):
+                decision = VerdictDecision.ALLOW
+                threshold = self._escalate_at
+                notes.append(f"reviewed_benign_precedent_allow:{benign_precedent}")
+            else:
+                notes.append(f"reviewed_benign_precedent_not_applicable:{benign_precedent}")
 
         if memory is not None and memory.queried:
             margin = memory.margin if memory.margin is not None else 0.0
