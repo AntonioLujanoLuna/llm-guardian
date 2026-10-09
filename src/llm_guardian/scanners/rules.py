@@ -26,7 +26,7 @@ from .base import (
     severity_rank,
 )
 
-VERSION = "rules-2"
+VERSION = "rules-3"
 
 #: Evidence that a tool call *matters*: without one of these, "call the get_weather tool with the
 #: city" is an API example rather than an injection. Paired with the tool-call shapes below, so a
@@ -142,9 +142,12 @@ def default_rules() -> list[Rule]:
             (OwaspCategory.LLM01, OwaspCategory.LLM08),
             _p(
                 r"\b(print|show|reveal|display|repeat|output|leak|give|dump|translate)\s+"
-                r"(me\s+)?(your\s+|the\s+)?"
-                r"(system\s+prompt|system\s+message|initial\s+prompt|initial\s+instructions|"
-                r"instructions|guidelines)\b"
+                r"(me\s+)?(?:"
+                r"(your\s+|the\s+)?(system\s+(?:prompt|message|instructions?)|"
+                r"initial\s+(?:prompt|instructions?)|developer\s+(?:message|instructions?))"
+                r"|(your|the|its|my|previous|prior|above|earlier|initial|original|developer|"
+                r"system|hidden|full)\s+(instructions|guidelines)"
+                r")\b"
             ),
             "A request tries to make the model reveal its system prompt or instructions.",
         ),
@@ -164,8 +167,8 @@ def default_rules() -> list[Rule]:
             Severity.HIGH,
             (OwaspCategory.LLM01, OwaspCategory.LLM08),
             _p(
-                r"\b(imprime|mu[e\u00e9]stra(?:me)?|revela|repite|dame|ens\u00e9\u00f1ame|vuelca|traduce)\s+"
-                r"(tu|el|la|las|los)?\s*"
+                r"\b(imprime|mu[e\u00e9]stra(?:me)?|revela|repite|dame|ens[e\u00e9]\u00f1ame|vuelca|traduce)\s+"
+                r"(tu|el|la|las|los|tus|mis|anteriores?|previas?|iniciales?)\s+"
                 r"(prompt|instrucciones?|mensaje\s+del?\s+sistema|directrices?)"
             ),
             "Una petici\u00f3n intenta revelar el prompt del sistema o las instrucciones.",
