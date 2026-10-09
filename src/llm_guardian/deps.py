@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from fastapi import Depends, Request
 
@@ -26,6 +26,9 @@ from .service import ScanService
 from .session import SessionRiskTracker
 from .settings import GuardianSettings
 from .verdicts import VerdictEngine
+
+if TYPE_CHECKING:
+    import httpx
 
 #: A clock is injected everywhere a timestamp is produced, so tests are deterministic.
 Clock = Callable[[], datetime]
@@ -124,6 +127,21 @@ def get_session_tracker(request: Request) -> SessionRiskTracker:
     return cast(SessionRiskTracker, request.app.state.session_tracker)
 
 
+def get_upstream_client(request: Request) -> httpx.AsyncClient:
+    """The proxy's long-lived upstream client, built on first use (needs the ``proxy`` extra)."""
+    client = getattr(request.app.state, "upstream_client", None)
+    if client is None:
+        import httpx
+
+        settings = get_settings(request)
+        client = httpx.AsyncClient(
+            base_url=(settings.proxy.upstream_url or "").rstrip("/") + "/",
+            timeout=settings.proxy.timeout_seconds,
+        )
+        request.app.state.upstream_client = client
+    return cast("httpx.AsyncClient", client)
+
+
 # -- Annotated aliases ------------------------------------------------------------------------
 SettingsDep = Annotated[GuardianSettings, Depends(get_settings)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
@@ -135,6 +153,10 @@ PolicyEngineDep = Annotated[PolicyEngine, Depends(get_policy_engine)]
 MetricsDep = Annotated[Metrics, Depends(get_metrics)]
 VerdictEngineDep = Annotated[VerdictEngine, Depends(get_verdict_engine)]
 SessionTrackerDep = Annotated[SessionRiskTracker, Depends(get_session_tracker)]
+if TYPE_CHECKING:
+    UpstreamClientDep = Annotated[httpx.AsyncClient, Depends(get_upstream_client)]
+else:  # httpx is optional (the ``proxy`` extra); FastAPI only needs the dependency at runtime
+    UpstreamClientDep = Annotated[Any, Depends(get_upstream_client)]
 
 
 def get_scan_service(

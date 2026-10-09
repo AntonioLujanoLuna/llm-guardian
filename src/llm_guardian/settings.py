@@ -145,6 +145,16 @@ class IncidentSettings(BaseModel):
     excerpt: Literal["redacted_content", "findings"] = "redacted_content"
 
 
+class ProxySettings(BaseModel):
+    """The OpenAI-compatible proxy (``api/proxy.py``), mounted at ``/openai/v1`` when enabled."""
+
+    #: Base URL of the OpenAI-compatible upstream, e.g. ``http://llm-d:8000/v1``. Unset = off.
+    upstream_url: str | None = None
+    #: Sent upstream as a bearer token. Unset: the client's own Authorization header is passed.
+    upstream_api_key: SecretStr | None = None
+    timeout_seconds: float = Field(default=120.0, gt=0.0)
+
+
 class ServerSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8090, ge=1, le=65535)
@@ -176,6 +186,7 @@ class GuardianSettings(BaseSettings):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     incidents: IncidentSettings = Field(default_factory=IncidentSettings)
     session: SessionSettings = Field(default_factory=SessionSettings)
+    proxy: ProxySettings = Field(default_factory=ProxySettings)
     policy: PolicySettings = Field(default_factory=PolicySettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 

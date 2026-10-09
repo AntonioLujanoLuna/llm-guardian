@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 es = ["elasticsearch>=8.14,<9"]
 ml = ["onnxruntime>=1.18", "transformers>=4.44"]
+proxy = ["httpx>=0.27"]
 dev = [
     "pytest>=8.3",
     "pytest-cov>=6",
