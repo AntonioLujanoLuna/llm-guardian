@@ -1,0 +1,29 @@
+# Declared principals, tool scopes, egress allow-list and budgets.
+#
+# This file is a *policy* input: it decides authorization together with `policy.py`. It is never
+# consulted for detection, and a model output can never edit it. Copy to `policies/local.toml`
+# (gitignored) and point `GUARDIAN_POLICY__FILE` at it.
+#
+# Decision rule: an unknown principal, an unlisted tool, an unlisted egress host or a request
+# above its budget is denied when `policy.fail_closed` is true (the default).
+
+[defaults]
+# Applied to every principal unless it declares its own.
+capabilities = ["read_repository"]
+egress_hosts = []
+budgets = { tokens = 200000.0, concurrency = 4.0, requests_per_minute = 60.0 }
+
+[principals.dev-console]
+capabilities = ["read_repository", "write_file", "run_tests", "call_mcp"]
+egress_hosts = ["pypi.org", "github.com"]
+budgets = { tokens = 400000.0, concurrency = 8.0, requests_per_minute = 120.0 }
+
+[principals.ci-agent]
+capabilities = ["read_repository", "run_tests"]
+egress_hosts = ["pypi.org"]
+
+# Optional per-tenant isolation. A retrieval whose `target_tenant` differs from the principal's
+# own tenant is denied unless it appears here with an explicit grant.
+[tenants.platform]
+principals = ["dev-console", "ci-agent"]
+allowed_cross_tenant_reads = []
