@@ -165,6 +165,53 @@ detections block rather than escalate. That is deliberate for LLM02/LLM03 shapes
 channel or a tool call prescribing a write to `~/.ssh/authorized_keys` is not a suspicion — and it
 is the reason the false-block count is the number to watch when any of them is loosened.
 
+## Third measurement: the third-party detectors (2026-10-09)
+
+Full reports in `docs/evaluations/`. Every candidate was measured on the same corpus through the
+same harness, and **none of them is adopted as a blocking detector**:
+
+- **CerbIA 0.3.0** (Apache-2.0, 8 MB, installs cleanly on py3.12): rules-core recall 0.556 with
+  **189 false blocks per 1,000**, and 13 of its 14 false blocks come from its bare-word
+  `KeywordScanner`. Its config/aggregation/error-policy *shape* is worth copying; the framework
+  would trade a safe ruleset for a noisier one.
+- **Prompt Armor 0.9.1** (Apache-2.0, 367 MB + 133 MB of models on first run): recall 0.375–0.431,
+  **149–230 false blocks per 1,000**; its pinned L2 classifier returns 401, so the heuristics ran
+  without it. Its rule files (`data/rules/default_rules.yml`, `known_attacks_v2.jsonl`) are useful
+  signature material.
+- **Vigil 0.8.7**: does not install here — no cp312 wheel, it builds a 2023 pandas from source.
+  Upstream calls it alpha; its YARA files remain reference material.
+- **Prompt Guard 2 22M/86M**: `gated=manual` under the Llama 4 Community Licence. **Unmeasured, and
+  unmeasurable without a licence decision** — that step is the user's, not the repo's.
+- **ProtectAI DeBERTa v3 base v2** (Apache-2.0, 739 MB ONNX): recall 0.819, precision 0.567,
+  **608 false blocks per 1,000**. The headline is not the interesting part — the *shape* is:
+  87.8% of benign **Spanish** cases blocked (36/41) against 27.3% of benign English (9/33). All
+  five Spanish coding prompts, every Spanish engineering message but one, nine of ten Spanish
+  incident/OWASP/red-team/CVE write-ups, and 8 of 10 benign security explainers in both languages.
+  It also misses exactly the families the rules now cover: `tool_call_injection`,
+  `agent_tool_misuse`, the exfiltration pair, markdown beacons, buried long context.
+  Reproduced independently on merged `main` by `docs/evaluations/verify-protectai.py`
+  (0.819 / 0.567 / 608.1, identical to the report).
+- **PIGuard** (MIT, ungated): recall 0.778, **378 false blocks per 1,000**, and on its own
+  *NotInject* benign set 11.5% false positives against DeBERTa's 43.4% — the cleanest overdefense
+  figure of any candidate, which is the same conclusion the model's authors publish.
+
+What ships from this: the `ml` seam is now a real ONNX scanner (`scanners/ml.py`, version `ml-2`,
+`id2label`-driven, 512-token truncation, raises rather than scoring nothing) and it stays **off by
+default**. No model may ever be the sole reason a request is blocked.
+
+Two criteria go into any future model selection:
+
+1. **False blocks must be reported split by language.** A model that over-triggers on Spanish is
+   unusable in this deployment whatever its English recall, and a single pooled false-block rate
+   hides precisely that.
+2. **The classifier's job is the paraphrase gap, not the structural families.** Every candidate
+   missed the tool-call, exfiltration-pair and beacon shapes that deterministic rules catch — and
+   the rules were the only thing that caught them.
+
+All of it is measured on the same saturated corpus, so the *ranking* is what to trust here, not the
+absolute figures. The held-out external sets are the next measurement, and until they exist none of
+these numbers should be quoted outside this repository.
+
 ## Known gaps in this measurement
 
 - Corpus synthesized in-repo: no third-party validation, and the same author wrote the cases and
