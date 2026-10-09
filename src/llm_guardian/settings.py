@@ -48,6 +48,11 @@ class ScannerSettings(BaseModel):
         default=True,
         description="The source+movement+destination correlation scanner (see scanners/exfil.py).",
     )
+    enable_agent_directive: bool = Field(
+        default=True,
+        description="Directives addressed to the model from untrusted channels (see "
+        "scanners/agent_directive.py); inert for operator provenance by construction.",
+    )
     enable_ml: bool = Field(default=False, description="Optional local classifier; off by default.")
     ml_model_path: Path | None = None
     #: Weights per scanner when aggregating; unlisted scanners weigh 1.0.

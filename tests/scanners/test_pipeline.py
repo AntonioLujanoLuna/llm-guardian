@@ -41,6 +41,7 @@ def test_selective_enable() -> None:
         enable_invisible_text=False,
         enable_deobfuscation=False,
         enable_exfil=False,
+        enable_agent_directive=False,
     )
     pipeline = ScannerPipeline.from_settings(settings)
     assert set(pipeline.versions()) == {"rules"}
