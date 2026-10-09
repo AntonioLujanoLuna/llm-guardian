@@ -196,6 +196,34 @@ Two defects were exposed while writing the adversarial tests, and both fixes are
 No decision path, no detector and no threshold was touched: the fix for item 1 removes evidence,
 and item 2 removes evidence. Neither can loosen a guarantee.
 
+## Update: what real traffic would have shown, and the one opt-in exception
+
+Two changes since the measurement above, both pinned by tests rather than by this corpus.
+
+**The scan path was not producing matchable precedents.** The corpus seeds precedents with
+`IncidentStore.create(redacted_excerpt=<the text>)`, so every similarity above is between texts.
+An incident the *scan* recorded stored only its detector summary
+(`"instruction_override (high): An instruction tries to …"`), and review promoted that summary into
+the memory. A later scan of the identical segment then matched its own reviewed precedent at about
+**0.1**, not 1.0: for real traffic, the "repeat" families above could not have worked even with a
+decision function wired in. Scan-recorded incidents now keep the segment with every secret-scanner
+span masked (`incidents.excerpt=redacted_content`, the default; `findings` restores the
+content-free behaviour), and the summary moves to `findings_summary`.
+`tests/test_service.py::test_reviewed_scan_incident_is_a_matching_precedent` pins the 1.0.
+
+**An exact-match exception, opt-in, and not on similarity.** `memory.reviewed_benign_allows`
+(default `false`) lets a case a human reviewed as `benign` lower a later *escalate* to *allow* when
+the bytes are identical (same SHA-256), in the same tenant and the same provenance. The near-miss
+table above is the reason it is exact: at 0.875 a reviewed staging deployment would cover
+production, and at 1.000-by-digest it covers only itself. It never lowers a block, never applies to
+`tool_call`/`tool_result`, to a truncated segment, to a scan with a scanner error, or to a segment a
+cross-segment seam finding contributed to; a re-review to `confirmed_attack` or an expired retention
+revokes it on the next scan, because it is read from the incident store rather than the memory.
+`tests/test_reviewed_precedent.py` holds the adversarial cases (other tenant, other provenance, one
+word changed, attack label, re-review, expiry, a block, a tool result, a seam). The decision-impact
+table above is unchanged because the flag is off and the corpus seeds synthetic digests; with the
+flag on, the `repeat_false_positive` family is exactly the case it exists for.
+
 ## Known gaps in this measurement
 
 1. **The corpus is synthesized here**, by the same author as the memory, so it is a design-cost

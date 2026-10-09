@@ -34,9 +34,11 @@ IDE / agent / MCP client
                  --> cache.py      exact-content feature cache (features, never decisions)
                  --> scanners/     deobfuscation -> fast rules -> secrets / URLs / invisible text
                  |                 -> optional local ML classifier
+                 |                 + the seam between adjacent segments (split instructions)
                  --> aggregate.py  per-OWASP-category scores, scanner-error policy
                  --> memory/       CONDITIONAL: only while the score sits in the uncertain band
                  --> verdicts.py   allow / escalate / block  (shadow by default)
+                 --> session.py    per-conversation risk across turns (can escalate, never block)
         |
         v
   POST /v1/policy/check  -- tool scopes, egress, cross-tenant, budgets (hard, fail-closed)
@@ -62,6 +64,7 @@ async only: incident -> human security review -> verified label -> risk index ->
 | `GET` | `/v1/metrics` | p50/p95/p99 per stage, verdict counts, escalation and error counters. |
 | `GET` | `/metrics` | The same counters in Prometheus text format. |
 | `GET` | `/v1/owasp` | Per-category implementation and test status. No invented aggregate score. |
+| `POST` | `/openai/v1/chat/completions` | Optional OpenAI-compatible proxy (when `proxy.upstream_url` is set): scan in, forward, scan out. |
 
 All of them are reachable in-process from another FastAPI app through `Depends` — the providers in
 `deps.py` (`SettingsDep`, `ScannersDep`, `FeatureCacheDep`, `RiskMemoryDep`, `ClockDep`,
@@ -83,12 +86,15 @@ src/llm_guardian/
   memory/         inmemory + elasticsearch risk memory, retrieval scoring
   verdicts.py     allow / escalate / block, shadow vs enforce
   policy.py       hard authorization at action boundaries
-  incidents.py    pending -> reviewed label, human-only promotion
+  incidents.py    pending -> reviewed label, human-only promotion, repeat folding, retention
+  incidents_sqlite.py  persistent incident store and audit trail (incidents.backend=sqlite)
+  redaction.py    secret masking for the content an incident keeps
+  session.py      decayed per-conversation risk across turns
   metrics.py      per-stage latency percentiles and counters
-  api/            the routers above
+  api/            the routers above (proxy.py: the OpenAI-compatible proxy)
   deps.py         FastAPI dependencies (the integration point)
   app.py          create_app()
-  cli.py          serve / scan / bench
+  cli.py          serve / scan / bench / export-training
   bench/          synthetic evaluation corpus and the latency harness
 docs/owasp-coverage.md   per-category status, maintained by hand from /v1/owasp
 policies/example.toml    declared principals, tool scopes, egress allow-list, budgets
@@ -103,8 +109,14 @@ policies/example.toml    declared principals, tool scopes, egress allow-list, bu
 - A **scanner error is never a pass**: it follows the declared error policy, and high-impact
   boundaries (tool call, tool result) fail closed.
 - **Nothing enters the risk memory without a review.** `auto_promote` is frozen off.
+- **Similarity never lowers a verdict.** The one opt-in exception (`memory.reviewed_benign_allows`)
+  is identity, not similarity: a human-reviewed benign case for the *identical bytes*, same tenant
+  and provenance, may lower an *escalate* to *allow* -- never a block or a high-impact segment.
+- **An incident keeps content only with secrets masked** (`incidents.excerpt`), never raw secrets.
 - A **withheld or unreadable input is `unknown`**, reported with its reason — never silently clean.
 - Shadow mode does **not** block; enforce mode is an explicit opt-in (`GUARDIAN_MODE=enforce`).
+  A request may opt *into* enforcement, but cannot opt out of an enforcing guardian unless
+  `allow_request_mode_downgrade=true`.
 
 ## Quickstart
 
@@ -119,6 +131,31 @@ curl -s -X POST localhost:8090/v1/scan -H 'content-type: application/json' -d '{
 }' | jq
 uv run llm-guardian bench --report               # latency + recall/false-positive baseline
 ```
+
+Persistence, the proxy and training data:
+
+```bash
+export GUARDIAN_INCIDENTS__BACKEND=sqlite GUARDIAN_INCIDENTS__SQLITE_PATH=/var/lib/guardian/incidents.db
+uv sync --extra proxy
+GUARDIAN_PROXY__UPSTREAM_URL=http://llm-d:8000/v1 uv run llm-guardian serve
+# clients: base_url = http://localhost:8090/openai/v1  (optional X-Guardian-Conversation header)
+uv run llm-guardian export-training --out reviewed.jsonl   # reviewed cases only, secrets masked
+```
+
+## Settings added beyond the Phase-1 surface
+
+| Setting (`GUARDIAN_` env, `__` nesting) | Default | What it does |
+| --- | --- | --- |
+| `ALLOW_REQUEST_MODE_DOWNGRADE` | `false` | Let `ScanRequest.mode=shadow` soften an enforcing guardian. |
+| `INCIDENTS__BACKEND` / `INCIDENTS__SQLITE_PATH` | `inmemory` | `sqlite` persists incidents and the review audit; the in-process risk memory is rebuilt from reviewed cases at startup. |
+| `INCIDENTS__EXCERPT` | `redacted_content` | What a scan-recorded incident keeps: the segment with secrets masked, or `findings` (detector summary only; the memory then cannot recognise a repeat). |
+| `CHUNKING__SCAN_SEAMS` | `true` | Scan the join of adjacent same-provenance segments so a split instruction is seen. |
+| `MEMORY__REVIEWED_BENIGN_ALLOWS` | `false` | Exact-bytes reviewed-benign case lowers an escalate to allow (see invariants). |
+| `SESSION__ENABLED`, `__DECAY`, `__ESCALATE_AT` | `true`, `0.8`, `0.6` | Per-conversation risk; three consecutive low-signal turns escalate. Quoted/discussed matches do not count. |
+| `PROXY__UPSTREAM_URL`, `__UPSTREAM_API_KEY` | unset | Mount the OpenAI-compatible proxy. Roles map to provenance no higher than a user turn; streaming output is not scanned. |
+
+Repeat sightings of the same `(tenant, provenance, content)` fold into one incident
+(`occurrences`, `last_seen_at`), and incidents past their retention deadline are purged on write.
 
 Gates: `ruff format --check .`, `ruff check .`, `mypy src/llm_guardian`,
 `pytest --cov=llm_guardian --cov-report=term` (coverage floor 85). CI runs them on 3.12 and 3.13.
