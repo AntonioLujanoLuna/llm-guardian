@@ -81,11 +81,21 @@ The false-block budget. Stated as a number, because "as few as possible" is not 
 
 Two smaller calls worth making at the same time: whether the public false blocks above justify an
 exception-list entry each, and whether the risk memory may ever do more than advise. **Today it is
-explicitly advisory**: it is queried only while the deterministic score sits in the escalation band,
-it is recorded as `memory_consulted:margin=…`, and cosine similarity never whitelists content — so a
-reviewed precedent cannot suppress anything yet. Deciding that it *may* suppress an escalation (never
-a block) on a repeat pattern is a deliberate loosening of the protection, and it should be made with
-the risk-memory measurement in hand rather than in passing.
+explicitly advisory**, and the measurement is now in: `docs/evaluations/risk-memory.md` finds
+**0 of 50 scenarios changed by a precedent** — including the 10 the corpus declared should change,
+where a repeat benign pattern escalates exactly as it did on first sight, and the three critical
+cases that stay blocked. So the three poisoning attempts that try to suppress a block are refused
+trivially: there is no suppression path to reach.
+
+That same measurement is what should decide the second call, and it argues for caution. The memory
+is a token-set cosine over stored text with no principal, destination, path or role in the feature —
+**seven of twelve near-misses retrieve at ≥ 0.71**, and "export the log to `paste.example`" is
+**0.909** similar to "export the log to `transfer.example`". A precedent wired to de-escalate on
+similarity would therefore apply across exactly the differences that matter: a reviewed-benign
+`staging` deployment would whitelist `production` at 0.875 similarity. Enabling suppression needs a
+feature that carries the principal, the destination and the path, not a threshold on a text
+embedding; until then, advisory is the correct state and the 0 is a property of the design rather
+than a tested claim about a working one.
 
 ## What enforcing still could not claim
 
