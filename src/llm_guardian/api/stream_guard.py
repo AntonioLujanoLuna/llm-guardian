@@ -29,6 +29,8 @@ from ..models import ScanResponse, SegmentInput, VerdictDecision
 from ..provenance import Provenance
 
 ScanFn = Callable[[Sequence[SegmentInput]], Awaitable[ScanResponse]]
+#: Authorizes the assembled tool calls; returns a denial message, or ``None`` when all pass.
+AuthorizeFn = Callable[[Sequence[tuple[str, Any]]], Awaitable[str | None]]
 
 
 @dataclass
@@ -55,8 +57,10 @@ class StreamGuard:
         *,
         checkpoint_chars: int,
         window_chars: int,
+        authorize: AuthorizeFn | None = None,
     ) -> None:
         self._scan = scan
+        self._authorize = authorize
         self._checkpoint = checkpoint_chars
         self._window = window_chars
         self._state = _State()
@@ -95,6 +99,12 @@ class StreamGuard:
             self.blocked = verdict
             yield _error_event(verdict)
             return
+        if self._authorize is not None and self._state.calls:
+            denial = await self._authorize(self.tool_calls())
+            enforcing = verdict is not None and not verdict.shadow
+            if denial is not None and enforcing:
+                yield _denial_event(denial)
+                return
         for held in pending:
             yield held
 
@@ -163,21 +173,26 @@ class StreamGuard:
             self._state.passthrough = True
         return verdict
 
+    def tool_calls(self) -> list[tuple[str, Any]]:
+        """The assembled tool calls, arguments parsed from JSON where they are JSON."""
+        calls: list[tuple[str, Any]] = []
+        for call in self._state.calls.values():
+            arguments: Any = call.arguments
+            with contextlib.suppress(json.JSONDecodeError):
+                arguments = json.loads(call.arguments)
+            calls.append((call.name, arguments))
+        return calls
+
     async def _final_scan(self) -> ScanResponse | None:
         segments = [
             SegmentInput(text=text, provenance=Provenance.MODEL_OUTPUT)
             for text in self._state.texts.values()
             if text
         ]
-        for call in self._state.calls.values():
-            arguments: Any = call.arguments
-            with contextlib.suppress(json.JSONDecodeError):
-                arguments = json.loads(call.arguments)
+        for name, arguments in self.tool_calls():
             segments.append(
                 SegmentInput(
-                    text=json.dumps(
-                        {"name": call.name, "arguments": arguments}, ensure_ascii=False
-                    ),
+                    text=json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False),
                     provenance=Provenance.TOOL_CALL,
                 )
             )
@@ -188,6 +203,18 @@ class StreamGuard:
 
 def _enforced_block(verdict: ScanResponse) -> bool:
     return verdict.decision is VerdictDecision.BLOCK and not verdict.shadow
+
+
+def _denial_event(message: str) -> bytes:
+    body = {
+        "error": {
+            "message": message,
+            "type": "guardian_blocked",
+            "param": None,
+            "code": "tool_call_denied",
+        }
+    }
+    return b"data: " + json.dumps(body).encode("utf-8") + b"\n\n"
 
 
 def _error_event(verdict: ScanResponse) -> bytes:
