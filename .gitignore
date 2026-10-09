@@ -12,3 +12,8 @@ build/
 *.egg-info/
 .env
 data/
+
+# SQLite incident store
+*.db
+*.db-wal
+*.db-shm

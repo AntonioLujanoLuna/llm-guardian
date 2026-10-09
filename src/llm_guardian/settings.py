@@ -110,6 +110,18 @@ class PolicySettings(BaseModel):
     )
 
 
+class IncidentSettings(BaseModel):
+    """Where incidents live, and what a scan-recorded incident keeps of the content."""
+
+    backend: Literal["inmemory", "sqlite"] = "inmemory"
+    sqlite_path: Path = Path("guardian-incidents.db")
+    #: ``redacted_content`` keeps the segment with secrets masked, so a reviewed case is a
+    #: precedent a later identical segment can actually match. ``findings`` keeps only the
+    #: detector summary -- nothing of the content -- at the cost of a risk memory that cannot
+    #: recognise a repeat.
+    excerpt: Literal["redacted_content", "findings"] = "redacted_content"
+
+
 class ServerSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8090, ge=1, le=65535)
@@ -139,6 +151,7 @@ class GuardianSettings(BaseSettings):
     cache: CacheSettings = Field(default_factory=CacheSettings)
     chunking: ChunkSettings = Field(default_factory=ChunkSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    incidents: IncidentSettings = Field(default_factory=IncidentSettings)
     policy: PolicySettings = Field(default_factory=PolicySettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
 
