@@ -55,6 +55,21 @@ def test_bench_reports_missing_harness(
     assert "bench is unavailable" in capsys.readouterr().err
 
 
+def test_bench_forwards_only_its_own_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`llm-guardian bench --report --json` reaches the harness without the subcommand name."""
+    import llm_guardian.bench.harness as harness
+
+    seen: list[list[str]] = []
+    monkeypatch.setattr(harness, "run_cli", lambda argv: seen.append(list(argv)) or 0)
+    assert main(["bench", "--report", "--json", "--repeat", "2"]) == 0
+    assert seen == [["--report", "--json", "--repeat", "2"]]
+
+
+def test_unknown_arguments_still_rejected_outside_bench() -> None:
+    with pytest.raises(SystemExit):
+        main(["scan", "hello", "--nope"])
+
+
 def test_serve_wires_uvicorn(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
