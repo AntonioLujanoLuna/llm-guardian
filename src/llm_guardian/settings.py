@@ -129,6 +129,9 @@ class GuardianSettings(BaseSettings):
     )
 
     mode: GuardMode = GuardMode.SHADOW
+    #: Whether ``ScanRequest.mode=shadow`` may soften a guardian configured to enforce. Off by
+    #: default: a caller can always opt *into* enforcement, never silently out of it.
+    allow_request_mode_downgrade: bool = False
     default_tenant: str | None = None
     retention_days_default: int = Field(default=180, ge=1, le=3650)
     thresholds: ThresholdSettings = Field(default_factory=ThresholdSettings)

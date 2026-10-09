@@ -117,10 +117,50 @@ def test_shadow_mode_reports_verdict_but_is_advisory() -> None:
     assert any("shadow_mode" in note for note in response.segments[0].notes)
 
 
-def test_per_request_shadow_override() -> None:
+def test_per_request_shadow_override_refused_by_default() -> None:
     service, _ = build(GuardianSettings(mode=GuardMode.ENFORCE))
+    response = scan(service, TOOL_RESULT_INJECTION, Provenance.TOOL_RESULT, mode=GuardMode.SHADOW)
+    assert response.shadow is False
+    assert response.mode is GuardMode.ENFORCE
+    assert any(warning.startswith("mode_override_refused") for warning in response.warnings)
+
+
+def test_per_request_shadow_override_when_allowed() -> None:
+    service, _ = build(GuardianSettings(mode=GuardMode.ENFORCE, allow_request_mode_downgrade=True))
     response = scan(service, "hello", mode=GuardMode.SHADOW)
     assert response.shadow is True
+    assert not any(warning.startswith("mode_override") for warning in response.warnings)
+
+
+def test_per_request_enforce_upgrade_always_allowed() -> None:
+    service, _ = build(GuardianSettings(mode=GuardMode.SHADOW))
+    response = scan(service, "hello", mode=GuardMode.ENFORCE)
+    assert response.shadow is False
+
+
+def test_ml_latency_not_charged_for_cache_hits() -> None:
+    class SlowMl:
+        name = "ml"
+        version = "ml-test"
+
+        def scan(self, text, provenance):
+            return []
+
+    settings = GuardianSettings(mode=GuardMode.ENFORCE)
+    container = create_service(settings)
+    service = ScanService(
+        settings,
+        container.clock,
+        ScannerPipeline([SlowMl()]),
+        container.cache,
+        container.memory,
+        container.incidents,
+        container.metrics,
+    )
+    scan(service, "measure me")
+    second = scan(service, "measure me")
+    assert second.segments[0].cached_features is True
+    assert second.latency.ml_ms == 0.0
 
 
 def test_truncated_high_impact_blocks() -> None:
