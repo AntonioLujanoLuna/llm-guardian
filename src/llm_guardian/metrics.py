@@ -1,5 +1,9 @@
 """Latency percentiles and counters, plus the Prometheus exposition of the same numbers.
 
+The Prometheus text groups samples by metric family -- one ``# HELP`` and one ``# TYPE`` per
+family, however many labelled samples it has -- because a second HELP line for the same name makes
+a Prometheus scrape fail outright.
+
 Percentiles use the nearest-rank method, which is what the small synthetic samples in tests pin:
 for ``[1..100]`` the p50 is 50 and the p95 is 95. Samples are bounded per stage so a long-running
 service keeps a fixed memory footprint, and every mutation and read holds a lock because the
@@ -83,6 +87,7 @@ class Metrics:
         self._escalations = 0
         self._retrieval_queries = 0
         self._scanner_errors = 0
+        self._events: dict[str, int] = {}
 
     # -- recording ----------------------------------------------------------------------------
     def observe(self, stage: str, milliseconds: float) -> None:
@@ -103,6 +108,23 @@ class Metrics:
                 for outcome in verdict.scanners:
                     if outcome.error:
                         self._scanner_errors += 1
+                    if outcome.scanner == "seam" and outcome.findings:
+                        self._bump_locked("seam_findings")
+                for note in verdict.notes:
+                    for prefix, event in _NOTE_EVENTS:
+                        if note.startswith(prefix):
+                            self._bump_locked(event)
+            for warning in response.warnings:
+                if warning.startswith("mode_override_refused"):
+                    self._bump_locked("mode_overrides_refused")
+
+    def count_event(self, event: str, amount: int = 1) -> None:
+        """Count a named event recorded outside a scan (the proxy's blocks and denials)."""
+        with self._lock:
+            self._bump_locked(event, amount)
+
+    def _bump_locked(self, event: str, amount: int = 1) -> None:
+        self._events[event] = self._events.get(event, 0) + amount
 
     def note_scanner_error(self) -> None:
         with self._lock:
@@ -121,6 +143,7 @@ class Metrics:
             escalations = self._escalations
             retrieval_queries = self._retrieval_queries
             scanner_errors = self._scanner_errors
+            events = dict(self._events)
 
         return MetricsReport(
             window_seconds=round(self.window_seconds(), 3),
@@ -134,16 +157,17 @@ class Metrics:
             escalations=escalations,
             retrieval_queries=retrieval_queries,
             scanner_errors=scanner_errors,
+            events=events,
             cache=cache,
         )
 
     def prometheus(self, cache: CacheStats) -> str:
         report = self.report(cache)
-        lines: list[str] = []
-        lines += _counter("guardian_scans_total", "Requests scanned.", report.scans)
-        lines += _counter("guardian_segments_total", "Segments inspected.", report.segments)
+        out = _Exposition()
+        out.counter("guardian_scans_total", "Requests scanned.", report.scans)
+        out.counter("guardian_segments_total", "Segments inspected.", report.segments)
         for decision, count in sorted(report.verdicts.items(), key=lambda item: item[0].value):
-            lines += _counter(
+            out.counter(
                 "guardian_verdicts_total",
                 "Verdicts by decision.",
                 count,
@@ -152,75 +176,101 @@ class Metrics:
         for category, count in sorted(
             report.decisions_by_category.items(), key=lambda i: i[0].value
         ):
-            lines += _counter(
+            out.counter(
                 "guardian_decisions_by_category_total",
                 "Segment decisions that touched an OWASP category.",
                 count,
                 {"category": category.value},
             )
-        lines += _counter("guardian_escalations_total", "Escalated requests.", report.escalations)
-        lines += _counter(
+        out.counter("guardian_escalations_total", "Escalated requests.", report.escalations)
+        out.counter(
             "guardian_retrieval_queries_total",
             "Risk-memory lookups inside the uncertain band.",
             report.retrieval_queries,
         )
-        lines += _counter(
+        out.counter(
             "guardian_scanner_errors_total", "Scanner failures observed.", report.scanner_errors
         )
-        lines += _gauge("guardian_cache_entries", "Feature-cache entries.", report.cache.entries)
-        lines += _counter("guardian_cache_hits_total", "Feature-cache hits.", report.cache.hits)
-        lines += _counter(
-            "guardian_cache_misses_total", "Feature-cache misses.", report.cache.misses
-        )
+        for event, count in sorted(report.events.items()):
+            out.counter(
+                "guardian_events_total",
+                "Named guardian events: seams, session escalations, proxy blocks, ...",
+                count,
+                {"event": event},
+            )
+        out.gauge("guardian_cache_entries", "Feature-cache entries.", report.cache.entries)
+        out.counter("guardian_cache_hits_total", "Feature-cache hits.", report.cache.hits)
+        out.counter("guardian_cache_misses_total", "Feature-cache misses.", report.cache.misses)
         for stage, latency in sorted(report.stages.items()):
-            lines += _gauge(
-                "guardian_stage_latency_p50_ms",
-                "Per-stage p50 latency.",
-                latency.p50_ms,
-                {"stage": stage},
-            )
-            lines += _gauge(
-                "guardian_stage_latency_p95_ms",
-                "Per-stage p95 latency.",
-                latency.p95_ms,
-                {"stage": stage},
-            )
-            lines += _gauge(
-                "guardian_stage_latency_p99_ms",
-                "Per-stage p99 latency.",
-                latency.p99_ms,
-                {"stage": stage},
-            )
-        lines += _gauge(
+            for name, value in (
+                ("p50", latency.p50_ms),
+                ("p95", latency.p95_ms),
+                ("p99", latency.p99_ms),
+            ):
+                out.gauge(
+                    f"guardian_stage_latency_{name}_ms",
+                    f"Per-stage {name} latency.",
+                    value,
+                    {"stage": stage},
+                )
+        out.gauge(
             "guardian_latency_budget_ms",
             "The design's experimental p95 target for short requests.",
             LATENCY_BUDGET_MS,
         )
+        return out.render()
+
+
+#: Verdict notes that are themselves events worth counting.
+_NOTE_EVENTS: tuple[tuple[str, str], ...] = (
+    ("session_risk_escalate", "session_escalations"),
+    ("reviewed_benign_precedent_allow", "reviewed_benign_allows"),
+)
+
+
+class _Exposition:
+    """Prometheus text format, grouped so each family has exactly one HELP and one TYPE line."""
+
+    def __init__(self) -> None:
+        self._families: dict[str, tuple[str, str, list[str]]] = {}
+
+    def counter(
+        self, name: str, help_text: str, value: float, labels: dict[str, str] | None = None
+    ) -> None:
+        self._add("counter", name, help_text, value, labels)
+
+    def gauge(
+        self, name: str, help_text: str, value: float, labels: dict[str, str] | None = None
+    ) -> None:
+        self._add("gauge", name, help_text, value, labels)
+
+    def _add(
+        self,
+        kind: str,
+        name: str,
+        help_text: str,
+        value: float,
+        labels: dict[str, str] | None,
+    ) -> None:
+        family = self._families.setdefault(name, (help_text, kind, []))
+        family[2].append(f"{name}{_labels(labels)} {value}")
+
+    def render(self) -> str:
+        lines: list[str] = []
+        for name, (help_text, kind, samples) in self._families.items():
+            lines.append(f"# HELP {name} {help_text}")
+            lines.append(f"# TYPE {name} {kind}")
+            lines.extend(samples)
         return "\n".join(lines) + "\n"
-
-
-def _counter(
-    name: str, help_text: str, value: int, labels: dict[str, str] | None = None
-) -> list[str]:
-    return [
-        f"# HELP {name} {help_text}",
-        f"# TYPE {name} counter",
-        f"{name}{_labels(labels)} {value}",
-    ]
-
-
-def _gauge(
-    name: str, help_text: str, value: float, labels: dict[str, str] | None = None
-) -> list[str]:
-    return [
-        f"# HELP {name} {help_text}",
-        f"# TYPE {name} gauge",
-        f"{name}{_labels(labels)} {value}",
-    ]
 
 
 def _labels(labels: dict[str, str] | None) -> str:
     if not labels:
         return ""
-    inner = ",".join(f'{key}="{value}"' for key, value in sorted(labels.items()))
+    inner = ",".join(f'{key}="{_escape(value)}"' for key, value in sorted(labels.items()))
     return "{" + inner + "}"
+
+
+def _escape(value: str) -> str:
+    """Label-value escaping from the exposition format: backslash, double quote, newline."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")

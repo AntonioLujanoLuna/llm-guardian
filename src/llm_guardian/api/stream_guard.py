@@ -58,9 +58,11 @@ class StreamGuard:
         checkpoint_chars: int,
         window_chars: int,
         authorize: AuthorizeFn | None = None,
+        on_event: Callable[[str], None] | None = None,
     ) -> None:
         self._scan = scan
         self._authorize = authorize
+        self._on_event = on_event or (lambda event: None)
         self._checkpoint = checkpoint_chars
         self._window = window_chars
         self._state = _State()
@@ -84,6 +86,7 @@ class StreamGuard:
                     verdict = await self._checkpoint_scan()
                     if verdict is not None and _enforced_block(verdict):
                         self.blocked = verdict
+                        self._on_event("proxy_stream_blocked")
                         yield _error_event(verdict)
                         return
                     for held in pending:
@@ -97,12 +100,14 @@ class StreamGuard:
         self.final = verdict
         if verdict is not None and _enforced_block(verdict):
             self.blocked = verdict
+            self._on_event("proxy_stream_blocked")
             yield _error_event(verdict)
             return
         if self._authorize is not None and self._state.calls:
             denial = await self._authorize(self.tool_calls())
             enforcing = verdict is not None and not verdict.shadow
             if denial is not None and enforcing:
+                self._on_event("proxy_tool_call_denied")
                 yield _denial_event(denial)
                 return
         for held in pending:
