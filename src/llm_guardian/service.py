@@ -74,7 +74,7 @@ class ScanService:
 
     def scan(self, request: ScanRequest) -> ScanResponse:
         warnings: list[str] = []
-        mode = request.mode or self._settings.mode
+        mode = self._resolve_mode(request.mode, warnings)
         shadow = mode is GuardMode.SHADOW
 
         started = time.perf_counter()
@@ -82,11 +82,11 @@ class ScanService:
         segments = self._segmenter.segment(request.conversation_id, request.segments)
         preprocess_ms = _elapsed_ms(preprocess_started)
 
-        deterministic_started = time.perf_counter()
-        outcomes_per_segment = self._scan_segments(segments, warnings)
-        deterministic_ms = _elapsed_ms(deterministic_started)
+        scan_started = time.perf_counter()
+        outcomes_per_segment, ml_ms = self._scan_segments(segments, warnings)
+        # The pipeline runs the classifier inline; report it as its own stage, not twice.
+        deterministic_ms = max(0.0, _elapsed_ms(scan_started) - ml_ms)
 
-        ml_ms = _sum_ml_ms(outcomes_per_segment)
         retrieval_ms = 0.0
         verdicts: list[SegmentVerdict] = []
         for segment, outcomes in zip(segments, outcomes_per_segment, strict=True):
@@ -143,21 +143,42 @@ class ScanService:
         self._metrics.record_scan(response)
         return response
 
+    # -- mode -----------------------------------------------------------------------------------
+    def _resolve_mode(self, requested: GuardMode | None, warnings: list[str]) -> GuardMode:
+        """A request may opt into enforcement, but may only opt out when the operator allows it."""
+        configured = self._settings.mode
+        if requested is None or requested is configured:
+            return configured
+        if (
+            configured is GuardMode.ENFORCE
+            and requested is GuardMode.SHADOW
+            and not self._settings.allow_request_mode_downgrade
+        ):
+            warnings.append(
+                "mode_override_refused: the request asked for shadow but the guardian is "
+                "configured to enforce (allow_request_mode_downgrade is false)."
+            )
+            return configured
+        return requested
+
     # -- scanning + cache ---------------------------------------------------------------------
     def _scan_segments(
         self, segments: Sequence[Segment], warnings: list[str]
-    ) -> list[tuple[ScannerOutcome, ...]]:
+    ) -> tuple[list[tuple[ScannerOutcome, ...]], float]:
+        """Outcomes per segment, plus the classifier time actually spent (cache hits cost none)."""
         seen: dict[tuple[str, str], tuple[ScannerOutcome, ...]] = {}
         results: list[tuple[ScannerOutcome, ...]] = []
+        ml_ms = 0.0
         for segment in segments:
             key_signature = (segment.digest, segment.provenance.value)
             if key_signature in seen:
                 results.append(seen[key_signature])
                 continue
             outcomes = self._scan_one(segment)
+            ml_ms += _ml_ms(outcomes)
             seen[key_signature] = outcomes
             results.append(outcomes)
-        return results
+        return results, ml_ms
 
     def _scan_one(self, segment: Segment) -> tuple[ScannerOutcome, ...]:
         key = FeatureCache.make_key(
@@ -241,13 +262,9 @@ def _categories(signals: Signals) -> tuple[OwaspCategory, ...]:
     return tuple(sorted(signals.category_scores, key=lambda category: category.value))
 
 
-def _sum_ml_ms(outcomes_per_segment: Sequence[Sequence[ScannerOutcome]]) -> float:
-    total = 0.0
-    for outcomes in outcomes_per_segment:
-        for outcome in outcomes:
-            if outcome.scanner == "ml":
-                total += outcome.duration_ms
-    return total
+def _ml_ms(outcomes: Sequence[ScannerOutcome]) -> float:
+    """Classifier time spent producing ``outcomes``; a replayed cache entry spent none."""
+    return sum(o.duration_ms for o in outcomes if o.scanner == "ml" and not o.cached)
 
 
 def _elapsed_ms(started: float) -> float:
