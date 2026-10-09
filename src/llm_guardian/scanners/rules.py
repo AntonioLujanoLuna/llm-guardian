@@ -26,7 +26,7 @@ from .base import (
     severity_rank,
 )
 
-VERSION = "rules-4"
+VERSION = "rules-5"
 
 #: Evidence that a tool call *matters*: without one of these, "call the get_weather tool with the
 #: city" is an API example rather than an injection. Paired with the tool-call shapes below, so a
@@ -132,7 +132,11 @@ def default_rules() -> list[Rule]:
             "instruction_override",
             Severity.HIGH,
             (OwaspCategory.LLM01,),
-            _p(r"\bforget\s+(everything|all|anything)(\s+(you\s+)?(were|was|told|know))?\b"),
+            # "Forget everything I said about the deadline" is a user correcting themselves.
+            _p(
+                r"\bforget\s+(everything|all|anything)\b(?!\s+(I|we|I've|we've)\b)"
+                r"(\s+(you\s+)?(were|was|told|know))?"
+            ),
             "An instruction tries to make the model forget what it was told.",
         ),
         # --- System-prompt exfiltration (LLM01, LLM08) --------------------------------------
@@ -146,6 +150,9 @@ def default_rules() -> list[Rule]:
                 r"(me\s+)?(?:"
                 r"(your\s+|the\s+)?(system\s+(?:prompt|message|instructions?)|"
                 r"initial\s+(?:prompt|instructions?)|developer\s+(?:message|instructions?))"
+                # "the system prompt format used by a chat template" is about the concept.
+                r"(?!\s+(format|template|syntax|structure|examples?|fields?|parameters?|"
+                r"tokens?|roles?|sections?|best\s+practices|guide|docs|documentation)\b)"
                 r"|(your|the|its|my|previous|prior|above|earlier|initial|original|developer|"
                 r"system|hidden|full)\s+(instructions|guidelines)"
                 r"|(your|its)\s+(hidden|internal|secret|confidential)\s+"
@@ -161,7 +168,10 @@ def default_rules() -> list[Rule]:
             Severity.HIGH,
             (OwaspCategory.LLM01, OwaspCategory.LLM08),
             _p(
-                r"\brepeat\s+(everything|all(\s+the)?\s+(text|content)|the\s+text)\s+(above|before|prior)\b"
+                r"\brepeat\s+(everything|all(\s+the)?\s+(text|content)|the\s+text)\s+"
+                r"(above|before|prior)\b"
+                # ... but not "repeat the text above in Spanish / as a list / with fixes".
+                r"(?!,?\s+(but\s+)?(in|into|as|with|without|translated|using|formatted)\b)"
             ),
             "A request tries to make the model echo everything above it.",
         ),
@@ -608,13 +618,31 @@ def default_rules() -> list[Rule]:
             "jailbreak_persona",
             Severity.HIGH,
             (OwaspCategory.LLM01,),
+            # A bare "enable developer mode" is phone, browser and IDE advice; it is high only
+            # when the mode has no benign reading (jailbreak / unrestricted / DAN), or when the
+            # switch comes with stripping the model's limits. The bare switch is a precursor.
             _p(
-                r"\b(enable|activate|enter|switch\s+to)\b[^\n]{0,20}\b(developer|debug|god|"
-                r"administrator|unrestricted)\s+mode\b"
+                r"\b(enable|activate|enter|switch\s+to)\b[^\n]{0,20}\b(jailbreak|unrestricted|"
+                r"unfiltered|uncensored|DAN)\s+mode\b"
+                r"|\b(enable|activate|enter|switch\s+to)\b[^\n]{0,20}\b(developer|debug|god|"
+                r"administrator|admin)\s+mode\b[^\n]{0,120}\b(no|without|ignore|bypass|disable|"
+                r"remove|lift)\s+(any\s+|all\s+|your\s+|the\s+)*(restrictions|rules|filters|"
+                r"guidelines|polic(?:y|ies)|censorship|limits|safeguards|safety)\b"
                 r"|\byou\s+have\s+no\s+content\s+polic(?:y|ies)\b"
                 r"|\byou\s+will\s+not\s+refuse\b"
             ),
             "A mode switch or a no-refusal claim is used to strip the model's policy.",
+        ),
+        Rule(
+            "jailbreak_precursor.mode_switch",
+            "jailbreak_precursor",
+            Severity.LOW,
+            (OwaspCategory.LLM01,),
+            _p(
+                r"\b(enable|activate|enter|switch\s+to)\b[^\n]{0,20}\b(developer|debug|god|"
+                r"administrator|admin)\s+mode\b"
+            ),
+            "A mode switch, which is also how a jailbreak starts; weak on its own.",
         ),
         Rule(
             "jailbreak_developer_mode.es",
